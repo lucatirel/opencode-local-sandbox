@@ -368,20 +368,17 @@ function Get-SandboxCreateArguments {
         [Parameter(Mandatory = $true)][string]$ProjectPath
     )
 
-    $Arguments = New-Object System.Collections.Generic.List[object]
-    $Arguments.Add("create")
+    $Arguments = @("create")
     if ($Config.DisableSharedSkills) {
-        $Arguments.Add("--no-share-skills")
+        $Arguments += "--no-share-skills"
     }
-    foreach ($Argument in @(
+    $Arguments += @(
         "--name", $SandboxName,
         "--memory", $Config.SandboxMemory,
         "--cpus", "$($Config.SandboxCpus)",
         "opencode", $ProjectPath
-    )) {
-        $Arguments.Add($Argument)
-    }
-    return @($Arguments)
+    )
+    return $Arguments
 }
 
 function New-ProjectSandbox {
