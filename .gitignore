@@ -1,10 +1,9 @@
-﻿# Local files and backups
+# Machine-local configuration and generated state
 config.local.ps1
-*.pre-repo.bak
 .local/
-certs-local/
+*.pre-repo.bak
 
-# Models and compiled binaries
+# Models, binaries and build output
 *.gguf
 *.exe
 build/
@@ -19,21 +18,23 @@ rootCA-key.pem
 .env.*
 !.env.example
 
-# Python
+# Language and tool caches
 venv/
 .venv/
 __pycache__/
 .pytest_cache/
 *.pyc
+node_modules/
 
-# Temporary tests
+# Temporary smoke tests from the original setup
 opencode-smoke-test*/
 test.py
 test.txt
 
-# Logs and editor files
+# Logs and editors
 *.log
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
