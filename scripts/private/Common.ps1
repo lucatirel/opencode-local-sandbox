@@ -356,9 +356,34 @@ function Assert-SandboxMatchesProject {
     }
 }
 
+function ConvertTo-SbxVersion {
+    param([Parameter(Mandatory = $true)][object[]]$Output)
+
+    $VersionText = (@($Output) | ForEach-Object { "$($_)" }) -join " "
+    if ($VersionText -notmatch '(?i)(?:^|\s)v?(?<Version>[0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)') {
+        throw "Versione sbx non riconosciuta: $VersionText"
+    }
+    return [Version]$Matches.Version
+}
+
 function Test-SbxSupportsNoSharedSkills {
-    $Result = Invoke-SbxCapture -ArgumentList @("create", "--help")
-    return (($Result.Output -join [Environment]::NewLine) -match '(?m)--no-share-skills(?:\s|$)')
+    # sbx 0.37.0 accepts this flag but does not list it in `sbx create --help`.
+    # Probe the parser first; --help prevents sandbox creation. Keep the
+    # documented minimum version as a fallback for CLI builds with hidden flags.
+    $ParserProbe = Invoke-SbxCapture `
+        -ArgumentList @("create", "--no-share-skills", "--help") `
+        -IgnoreExitCode
+    if ($ParserProbe.ExitCode -eq 0) {
+        return $true
+    }
+
+    try {
+        $VersionResult = Invoke-SbxCapture -ArgumentList @("version")
+        return ((ConvertTo-SbxVersion -Output $VersionResult.Output) -ge [Version]"0.37.0")
+    }
+    catch {
+        return $false
+    }
 }
 
 function Get-SandboxCreateArguments {
