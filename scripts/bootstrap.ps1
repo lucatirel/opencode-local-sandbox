@@ -121,9 +121,20 @@ else {
     Write-Host "Configurazione locale gia presente; non viene sovrascritta." -ForegroundColor Yellow
 }
 
-# Trigger login only when the CLI cannot list sandboxes.
-& sbx ls -q *> $null
-if ($LASTEXITCODE -ne 0) {
+# Trigger login only when the CLI cannot list sandboxes. Windows PowerShell 5.1
+# wraps harmless native stderr (for example "Starting sandboxd daemon...") in a
+# NativeCommandError when ErrorActionPreference is Stop, so probe with Continue.
+$PreviousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = "Continue"
+    & sbx ls -q 1>$null 2>$null
+    $SbxListExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $PreviousErrorActionPreference
+}
+
+if ($SbxListExitCode -ne 0) {
     Write-Host "Accesso a Docker Sandboxes richiesto..." -ForegroundColor Cyan
     & sbx login
     if ($LASTEXITCODE -ne 0) {
