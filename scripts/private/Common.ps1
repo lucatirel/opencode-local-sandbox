@@ -342,7 +342,7 @@ function Assert-SandboxMatchesProject {
         [Parameter(Mandatory = $true)][string]$ProjectPath
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($Sandbox.Agent) -and $Sandbox.Agent -ine "opencode") {
+    if ($Sandbox.Agent -ine "opencode") {
         throw "La sandbox '$($Sandbox.Name)' usa l'agent '$($Sandbox.Agent)', non OpenCode. Scegli un altro nome o ricreala esplicitamente."
     }
     if (@($Sandbox.Workspaces).Count -ne 1) {
@@ -438,6 +438,24 @@ function Exit-LlamaSessionLock {
     }
     finally {
         $SessionLock.Mutex.Dispose()
+    }
+}
+
+function Test-LlamaSessionLockAvailable {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    $Probe = $null
+    try {
+        $Probe = Enter-LlamaSessionLock -Port $Port
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($null -ne $Probe) {
+            Exit-LlamaSessionLock -SessionLock $Probe
+        }
     }
 }
 
@@ -840,7 +858,6 @@ function Start-ManagedLlamaServer {
     $Launch = Get-LlamaServerLaunchInfo -Config $Config
     $LogDirectory = Join-Path $Config.ToolRoot ".local\logs"
     New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
-    Remove-OldLlamaLogs -Config $Config
     $Stamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
     $StdOutLog = Join-Path $LogDirectory "llama-$Stamp.stdout.log"
     $StdErrLog = Join-Path $LogDirectory "llama-$Stamp.stderr.log"
@@ -862,6 +879,7 @@ function Start-ManagedLlamaServer {
             -RedirectStandardOutput $StdOutLog `
             -RedirectStandardError $StdErrLog `
             -PassThru
+        Remove-OldLlamaLogs -Config $Config
     }
     finally {
         if ($null -eq $PreviousThinking) {

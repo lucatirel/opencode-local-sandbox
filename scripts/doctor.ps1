@@ -68,7 +68,13 @@ if ($Config) {
 
     if (Test-Path -LiteralPath $Certificate -PathType Leaf) {
         try {
-            $ParsedCertificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $Certificate
+            $Pem = Get-Content -LiteralPath $Certificate -Raw
+            $Base64Certificate = ($Pem `
+                -replace '-----BEGIN CERTIFICATE-----', '' `
+                -replace '-----END CERTIFICATE-----', '' `
+                -replace '\s', '')
+            $CertificateBytes = [Convert]::FromBase64String($Base64Certificate)
+            $ParsedCertificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (,$CertificateBytes)
             $RemainingDays = [Math]::Floor(($ParsedCertificate.NotAfter.ToUniversalTime() - [DateTime]::UtcNow).TotalDays)
             Add-Check -Name "Scadenza HTTPS" -Ok ($RemainingDays -ge 7) -Detail "$($ParsedCertificate.NotAfter) ($RemainingDays giorni)"
         }

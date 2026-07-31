@@ -72,12 +72,19 @@ Write-Host ""
 Write-Host "Listener llama.cpp" -ForegroundColor Cyan
 $Listeners = @(Get-LlamaListenerProcesses -Port ([int]$Config.LlamaPort))
 if ($Listeners.Count -eq 0) {
-    Write-Host "Porta $($Config.LlamaPort) libera; nessun modello occupa la GPU per questo tool." -ForegroundColor Green
+    Write-Host "Porta $($Config.LlamaPort) libera; nessun listener attivo per questa configurazione." -ForegroundColor Green
 }
 else {
     $Listeners | ForEach-Object {
         Write-Host "Porta $($Config.LlamaPort): $($_.ProcessName) (PID $($_.Id))" -ForegroundColor Yellow
     }
+}
+
+if (Test-LlamaSessionLockAvailable -Port ([int]$Config.LlamaPort)) {
+    Write-Host "Lock sessione: libero" -ForegroundColor Green
+}
+else {
+    Write-Host "Lock sessione: occupato da un altro launcher (avvio, sessione o pulizia in corso)" -ForegroundColor Yellow
 }
 
 $LogDirectory = Join-Path $Config.ToolRoot ".local\logs"

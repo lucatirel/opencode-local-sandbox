@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 
 $Config = Get-ToolConfig
 $SessionLock = Enter-LlamaSessionLock -Port ([int]$Config.LlamaPort)
+$PreviousThinking = [Environment]::GetEnvironmentVariable("LLAMA_ARG_CHAT_TEMPLATE_KWARGS", "Process")
 
 try {
     $Launch = Get-LlamaServerLaunchInfo -Config $Config
@@ -34,5 +35,15 @@ try {
     }
 }
 finally {
-    Exit-LlamaSessionLock -SessionLock $SessionLock
+    try {
+        if ($null -eq $PreviousThinking) {
+            Remove-Item Env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:LLAMA_ARG_CHAT_TEMPLATE_KWARGS = $PreviousThinking
+        }
+    }
+    finally {
+        Exit-LlamaSessionLock -SessionLock $SessionLock
+    }
 }

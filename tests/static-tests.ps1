@@ -51,6 +51,13 @@ $MatchingSandbox = [pscustomobject]@{
 }
 Assert-SandboxMatchesProject -Sandbox $MatchingSandbox -ProjectPath "C:\Projects\Alpha App"
 Assert-Throws { Assert-SandboxMatchesProject -Sandbox $MatchingSandbox -ProjectPath "D:\Work\Alpha App" } "Una sandbox associata a un altro workspace deve essere rifiutata."
+$UnknownAgentSandbox = [pscustomobject]@{
+    Name = $First
+    Agent = ""
+    Status = "stopped"
+    Workspaces = @("C:\Projects\Alpha App")
+}
+Assert-Throws { Assert-SandboxMatchesProject -Sandbox $UnknownAgentSandbox -ProjectPath "C:\Projects\Alpha App" } "L'agent deve essere verificabile prima del riuso."
 
 $NormalizedHosts = @(Get-NormalizedNetworkHosts -Hosts @("Registry.NpmJs.org:443", "registry.npmjs.org:443", "pypi.org:443"))
 Assert-Equal 2 $NormalizedHosts.Count "Gli host di rete devono essere normalizzati e deduplicati."
@@ -131,5 +138,9 @@ Assert-True ($DispatcherSource -match '"recreate"') "Il dispatcher deve esporre 
 $RecreateSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\recreate-project.ps1") -Raw
 Assert-True ($RecreateSource -match 'Scrivi RICREA') "La rimozione persistente deve richiedere conferma esplicita."
 Assert-True ($RecreateSource -notmatch 'Remove-Item.+ProjectPath') "La ricreazione non deve eliminare la cartella host."
+Assert-True ($RecreateSource -match 'Enter-LlamaSessionLock') "La ricreazione non deve gareggiare con una sessione attiva."
+
+$StatusSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\status.ps1") -Raw
+Assert-True ($StatusSource -match 'Test-LlamaSessionLockAvailable') "Lo stato deve mostrare anche il lock del launcher."
 
 Write-Host "Static functional tests passed." -ForegroundColor Green

@@ -2,13 +2,21 @@ name: Validate template
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   powershell-and-json:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Parse PowerShell files (Windows PowerShell 5.1)
         shell: powershell
