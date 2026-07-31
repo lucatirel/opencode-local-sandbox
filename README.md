@@ -1,299 +1,319 @@
-﻿# OpenCode + Qwen3 + llama.cpp in a Docker Sandbox
+# OpenCode Local Sandbox Template
 
-Reproducible Windows setup for running Qwen3 locally through `llama.cpp`, using OpenCode inside an isolated Docker Sandbox.
+Template Windows per usare un modello locale servito da `llama.cpp` con OpenCode confinato in una Docker Sandbox distinta per ogni progetto.
 
-## Architecture
+Questa repository contiene il **tooling**, non i progetti e non le dipendenze pesanti. `llama.cpp`, i modelli GGUF, i certificati privati e le cartelle di lavoro rimangono fuori da Git.
 
-- `llama-server` runs on the Windows host.
-- The server listens only on `127.0.0.1:8080`.
-- OpenCode runs inside the Docker Sandbox.
-- The sandbox reaches the host through `host.docker.internal`.
-- HTTPS is enabled with a local development certificate.
-- CORS is limited to localhost.
-- The llama.cpp Web UI is disabled.
-- Models, private keys and machine-specific paths are not committed.
+## Risultato finale
 
-## Tested configuration
+Una volta configurato il PC:
 
-- Windows 11
-- NVIDIA RTX 4070 Laptop GPU, 8 GB VRAM
-- 16 GB system RAM
-- OpenCode 1.17.11
-- Qwen3 8B Q4_K_M
-- Context: 32768
-- KV cache: Q4
-- Flash Attention: enabled
-- One inference slot
+```powershell
+.\sandbox.ps1 new "mia-app"
+```
 
-## Repository contents
+crea automaticamente una cartella Git sotto `Projects`, crea una sandbox dedicata, avvia `llama-server` se necessario, installa CA e configurazione OpenCode nella sandbox e apre OpenCode.
+
+Per un progetto gia esistente:
+
+```powershell
+.\sandbox.ps1 open "C:\Projects\progetto-esistente"
+```
+
+La repository del template resta separata:
 
 ```text
-.
-|-- opencode.json
-|-- config.example.ps1
-|-- scripts
-|   |-- generate-certs.ps1
-|   |-- setup-sandbox.ps1
-|   |-- start-llama.ps1
-|   `-- run-opencode.ps1
-|-- .gitignore
-`-- README.md
+C:\AI\llama.cpp\                       programma, modelli e certificati
+C:\AI\opencode-local-sandbox\          questa repository
+C:\Users\nome\Projects\mia-app\       progetto Git e workspace sandbox
+C:\Users\nome\Projects\altra-app\     altro progetto, altra sandbox
 ```
 
-The following files are intentionally excluded from Git:
+Non bisogna creare progetti dentro `opencode-local-sandbox` e non bisogna copiare il template dentro i progetti.
 
-- `config.local.ps1`
-- GGUF models
-- compiled llama.cpp binaries
-- private keys
-- local certificates
-- temporary files and logs
+## Architettura e isolamento
 
-## Requirements
+- `llama-server` gira sull'host Windows e ascolta soltanto su `127.0.0.1`.
+- La sandbox raggiunge il server tramite `host.docker.internal` e HTTPS.
+- Ogni progetto riceve una sandbox con nome stabile derivato da nome e percorso.
+- Soltanto la cartella del progetto viene montata in scrittura.
+- OpenCode, pacchetti installati e Docker Engine della sandbox rimangono nella microVM.
+- La configurazione OpenCode viene generata e installata dentro la sandbox; non viene copiata nel progetto.
+- La regola per `localhost:8080` e limitata alla singola sandbox tramite `--sandbox`.
+- Modelli, chiavi, certificati e percorsi locali non vengono committati.
 
-Install the following tools before using the project:
+La sandbox protegge il resto del PC, ma OpenCode puo modificare o cancellare file non committati dentro il progetto. Fai commit frequenti.
 
-- Git
-- Docker Desktop
-- Docker Sandboxes CLI
-- PowerShell
-- llama.cpp compiled with CUDA support
-- mkcert
-- OpenCode sandbox image
+## Requisiti del nuovo PC
 
-Install mkcert with:
+Prima del bootstrap devono esistere:
+
+- Windows e PowerShell;
+- Git;
+- `llama.cpp` compilato, preferibilmente con CUDA;
+- almeno un modello `.gguf` dentro `llama.cpp\models`.
+
+Il bootstrap puo installare tramite `winget` i due strumenti piccoli mancanti:
+
+- Docker Sandboxes CLI (`sbx`);
+- `mkcert`.
+
+Non scarica modelli e non compila `llama.cpp`, perche percorso, GPU e modello sono scelte specifiche della macchina.
+
+## Installazione da zero
+
+Clona il template:
 
 ```powershell
-winget install -e --id FiloSottile.mkcert
-```
-
-## Clone the repository
-
-```powershell
-git clone YOUR_REPOSITORY_URL
-Set-Location YOUR_REPOSITORY_FOLDER
-```
-
-## Create the local configuration
-
-Copy the example configuration:
-
-```powershell
-Copy-Item ".\config.example.ps1" ".\config.local.ps1"
-```
-
-Open it:
-
-```powershell
-notepad ".\config.local.ps1"
-```
-
-Configure the llama.cpp path and model filename:
-
-```powershell
-$LlamaRoot = "C:\Users\YOUR_USER\Desktop\Git\llama.cpp"
-$ModelFile = "Qwen3-8B-Q4_K_M.gguf"
-```
-
-The model must be located at:
-
-```text
-C:\path\to\llama.cpp\models\Qwen3-8B-Q4_K_M.gguf
-```
-
-The compiled server must be located at:
-
-```text
-C:\path\to\llama.cpp\build\bin\Release\llama-server.exe
-```
-
-## Generate HTTPS certificates
-
-Run:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\generate-certs.ps1
-```
-
-The certificates will be created in:
-
-```text
-llama.cpp\certs\
-```
-
-The certificate includes:
-
-- `localhost`
-- `127.0.0.1`
-- `::1`
-- `host.docker.internal`
-
-## Configure the Docker Sandbox
-
-Run:
-
-```powershell
-.\scripts\setup-sandbox.ps1
-```
-
-This script:
-
-1. Creates the OpenCode sandbox if it does not already exist.
-2. Applies the configured RAM and CPU limits.
-3. Allows access to the local llama.cpp endpoint.
-4. Copies the mkcert root CA into the sandbox.
-5. Installs the CA in the sandbox trust store.
-
-## Start llama.cpp
-
-Open a PowerShell terminal in the repository and run:
-
-```powershell
-.\scripts\start-llama.ps1
-```
-
-Keep this terminal open while using OpenCode.
-
-The API endpoint will be:
-
-```text
-https://127.0.0.1:8080/v1
-```
-
-Inside the sandbox, OpenCode uses:
-
-```text
-https://host.docker.internal:8080/v1
-```
-
-## Start OpenCode
-
-Open a second PowerShell terminal in the repository and run:
-
-```powershell
-.\scripts\run-opencode.ps1
-```
-
-## Verify the llama.cpp API
-
-From Windows PowerShell:
-
-```powershell
-Invoke-RestMethod `
-    -Uri "https://localhost:8080/v1/models" `
-    -Method Get
-```
-
-To test chat completions:
-
-```powershell
-$Body = @{
-    model = "qwen3-8b-q4"
-    messages = @(
-        @{
-            role = "user"
-            content = "Reply with exactly: hello"
-        }
-    )
-} | ConvertTo-Json -Depth 10
-
-Invoke-RestMethod `
-    -Uri "https://localhost:8080/v1/chat/completions" `
-    -Method Post `
-    -ContentType "application/json" `
-    -Body $Body
-```
-
-## Normal startup workflow
-
-Terminal 1:
-
-```powershell
-Set-Location "C:\path\to\repository"
-.\scripts\start-llama.ps1
-```
-
-Terminal 2:
-
-```powershell
-Set-Location "C:\path\to\repository"
-.\scripts\run-opencode.ps1
-```
-
-## Security notes
-
-- The llama.cpp server listens only on `127.0.0.1`.
-- The server is not exposed to the local network.
-- HTTPS uses a locally trusted mkcert certificate.
-- The private key remains outside the repository.
-- The GGUF model remains outside the repository.
-- Machine-specific paths remain in `config.local.ps1`.
-- OpenCode executes inside a resource-limited Docker Sandbox.
-- Repository permissions are currently configured as `allow`.
-
-Review `opencode.json` before using the project with untrusted repositories.
-
-## Troubleshooting
-
-### PowerShell blocks script execution
-
-Run:
-
-```powershell
+git clone https://github.com/lucatirel/opencode-local-sandbox.git
+Set-Location .\opencode-local-sandbox
 Set-ExecutionPolicy -Scope Process Bypass
 ```
 
-### llama-server executable not found
+Avvia il bootstrap:
 
-Verify this path in `config.local.ps1`:
+```powershell
+.\sandbox.ps1 bootstrap
+```
+
+Il bootstrap:
+
+1. verifica Git, `sbx` e `mkcert`;
+2. propone di installare `sbx` o `mkcert` se mancano;
+3. rileva il percorso storico `Desktop\Git\llama.cpp` oppure lo chiede;
+4. rileva automaticamente il GGUF se ce n'e uno solo;
+5. chiede la cartella generale dei progetti;
+6. crea `config.local.ps1`, escluso da Git;
+7. effettua il login a Docker Sandboxes quando necessario;
+8. genera e considera attendibile il certificato HTTPS;
+9. esegue il controllo `doctor`.
+
+Su una nuova installazione di `sbx`, per la rete scegli **Locked Down** se vuoi il profilo piu restrittivo. Le regole aggiunte da questo template sono specifiche della singola sandbox. Un'eventuale policy globale gia esistente continua comunque ad applicarsi.
+
+## Uso quotidiano
+
+### Nuovo progetto
+
+```powershell
+Set-Location C:\AI\opencode-local-sandbox
+.\sandbox.ps1 new "nome-progetto"
+```
+
+Il progetto nasce come repository Git vuota. Dentro OpenCode puoi quindi scrivere, per esempio:
+
+> Stiamo creando XYZ. Definisci una struttura adatta, crea i file necessari, usa solo dipendenze pertinenti, esegui i test e inizializza il progetto in questa cartella.
+
+Git e gia inizializzato dallo script: non chiedere all'LLM di creare un'altra repository annidata.
+
+### Progetto esistente
+
+```powershell
+.\sandbox.ps1 open "C:\Projects\nome-progetto"
+```
+
+Se la relativa sandbox non esiste viene creata. Se esiste viene riutilizzata e la configurazione viene aggiornata.
+
+### Server manuale
+
+Normalmente `new` e `open` aprono una seconda finestra PowerShell e avviano il server quando non risponde. Per avviarlo manualmente:
+
+```powershell
+.\sandbox.ps1 server
+```
+
+### Diagnostica
+
+```powershell
+.\sandbox.ps1 doctor
+```
+
+## Comandi principali
 
 ```text
-$LlamaRoot\build\bin\Release\llama-server.exe
+.\sandbox.ps1 help
+.\sandbox.ps1 bootstrap
+.\sandbox.ps1 doctor
+.\sandbox.ps1 server
+.\sandbox.ps1 new nome-progetto
+.\sandbox.ps1 open C:\percorso\progetto
 ```
 
-### Model not found
+Gli script sotto `scripts\` espongono opzioni avanzate, per esempio `-NoAttach`, `-NoAutoStartServer`, `-NoGit` e un nome sandbox esplicito.
 
-Verify that the model exists at:
+## Configurazione locale
 
-```text
-$LlamaRoot\models\$ModelFile
-```
-
-### HTTPS certificate errors
-
-Regenerate the certificates:
+`config.example.ps1` contiene tutti i default versionati. `config.local.ps1` contiene normalmente solo le differenze della macchina:
 
 ```powershell
-.\scripts\generate-certs.ps1
+$LlamaRoot = 'C:\AI\llama.cpp'
+$ModelFile = 'Qwen3-8B-Q4_K_M.gguf'
+$ProjectsRoot = 'C:\Projects'
 ```
 
-Then reinstall the CA inside the sandbox:
+Puoi aggiungere override, per esempio:
 
 ```powershell
-.\scripts\setup-sandbox.ps1
+$ContextSize = 24576
+$SandboxMemory = '8g'
+$SandboxCpus = 8
+$ModelAlias = 'qwen3-8b-q4'
+$OutputTokens = 2048
 ```
 
-### Sandbox cannot reach llama.cpp
+Un vecchio `config.local.ps1` con poche variabili continua a funzionare: prima vengono caricati i default, poi gli override locali.
 
-Verify that llama.cpp is running and inspect the sandbox policy:
+## Rete e installazione delle dipendenze dei progetti
 
-```powershell
-sbx policy log agentbox-test --limit 20
-```
-
-The allowed requests should include:
+L'endpoint locale viene consentito automaticamente solo alla sandbox corrente:
 
 ```text
 localhost:8080
 ```
 
-### OpenCode shows empty think tags
+Se usi una policy globale Locked Down e vuoi permettere package manager specifici, aggiungi in `config.local.ps1` soltanto gli host necessari:
 
-The llama.cpp startup script sets:
-
-```text
-LLAMA_ARG_CHAT_TEMPLATE_KWARGS={"enable_thinking":false}
+```powershell
+$AdditionalNetworkHosts = @(
+    'registry.npmjs.org:443',
+    'pypi.org:443',
+    'files.pythonhosted.org:443'
+)
 ```
 
-The server also uses the configured reasoning format for compatibility with OpenCode.
+Questi host vengono applicati alle sandbox aperte successivamente. Non usare `"**"` se vuoi mantenere un isolamento di rete significativo.
+
+## Configurazione llama.cpp predefinita
+
+I default attuali sono tarati sul setup verificato con RTX 4070 Laptop 8 GB e 16 GB RAM:
+
+- Qwen3 8B Q4_K_M;
+- contesto `32768`;
+- KV cache `q4_0`;
+- Flash Attention attiva;
+- un solo slot;
+- GPU layers `all`;
+- thinking disabilitato;
+- reasoning format `deepseek` per evitare tag `<think>` vuoti;
+- Web UI disabilitata;
+- HTTPS e bind a `127.0.0.1`.
+
+Se la memoria non basta, prova prima:
+
+```powershell
+$ContextSize = 24576
+```
+
+nel file `config.local.ps1`.
+
+## Configurazione OpenCode
+
+Quando apri un progetto, lo script genera la configurazione effettiva in `.local\generated`, poi la installa nella home della sandbox:
+
+```text
+~/.config/opencode/opencode.json
+```
+
+In questo modo:
+
+- il progetto non riceve un `opencode.json` artificiale;
+- un `opencode.json` realmente appartenente al progetto puo comunque avere precedenza;
+- ogni sandbox mantiene sessioni e stato separati;
+- cambi di modello o contesto vengono propagati alla successiva apertura.
+
+La configurazione predefinita usa `permission: allow`: OpenCode non chiede conferma per ogni operazione, ma resta confinato dalla sandbox. Cambiala in `ask` in `config.local.ps1` se preferisci approvazioni interattive:
+
+```powershell
+$OpenCodePermission = 'ask'
+```
+
+## Aggiornare il template
+
+Dentro la repository del template:
+
+```powershell
+git pull
+.\sandbox.ps1 doctor
+```
+
+Le sandbox esistenti ricevono la nuova configurazione quando le riapri.
+
+## Migrazione dalla prima versione
+
+La vecchia sandbox `agentbox-test` non viene rimossa automaticamente. Dopo aver verificato una nuova sandbox per un progetto, puoi elencare e rimuovere manualmente quella vecchia:
+
+```powershell
+sbx ls
+sbx rm agentbox-test
+```
+
+`sbx rm` elimina lo stato della sandbox, non la cartella progetto sull'host, ma resta un'operazione irreversibile per i pacchetti e le sessioni conservati nella microVM.
+
+## Risoluzione problemi
+
+### Script PowerShell bloccati
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+### Sandbox non autenticata
+
+```powershell
+sbx login
+```
+
+### Server non raggiungibile
+
+```powershell
+.\sandbox.ps1 server
+```
+
+In un altro terminale:
+
+```powershell
+Invoke-RestMethod https://localhost:8080/v1/models
+```
+
+### Controllare le richieste di rete
+
+Trova il nome con `sbx ls`, poi:
+
+```powershell
+sbx policy log NOME-SANDBOX --limit 20
+```
+
+### Certificato non attendibile
+
+```powershell
+.\scripts\generate-certs.ps1
+.\sandbox.ps1 open "C:\percorso\progetto"
+```
+
+La seconda operazione reinstalla la CA nella sandbox.
+
+## File della repository
+
+```text
+.
+|-- sandbox.ps1
+|-- config.example.ps1
+|-- opencode.json
+|-- AGENTS.md
+|-- scripts
+|   |-- bootstrap.ps1
+|   |-- doctor.ps1
+|   |-- generate-certs.ps1
+|   |-- new-project.ps1
+|   |-- open-project.ps1
+|   |-- start-llama.ps1
+|   |-- run-opencode.ps1
+|   |-- setup-sandbox.ps1
+|   `-- private\Common.ps1
+|-- .github\workflows\validate.yml
+|-- .gitattributes
+|-- .gitignore
+`-- README.md
+```
+
+`run-opencode.ps1` e `setup-sandbox.ps1` restano come wrapper di compatibilita; per il normale utilizzo usa `sandbox.ps1`.
+
