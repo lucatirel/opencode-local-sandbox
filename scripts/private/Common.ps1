@@ -701,23 +701,60 @@ function Install-SandboxConfiguration {
         -ManagedNetworkHosts $AllowedHosts `
         -PreviousMetadata $PreviousMetadata
 
-    Invoke-External "sbx" @("cp", $RootCA, "${SandboxName}:/tmp/llama-local-ca.crt") | Out-Null
-    Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
-    Invoke-External "sbx" @("cp", $GeneratedMetadata.Path, "${SandboxName}:/tmp/opencode-local-sandbox.json") | Out-Null
+    # sbx cp creates files as root. A regular agent cannot unlink root-owned
+    # entries directly from sticky /tmp, so stage them in one root-managed
+    # directory and always remove that exact directory with sudo.
+    $StagingRoot = "/tmp/opencode-local-sandbox-stage"
+    $StagingPrepared = $false
+    $PrimaryError = $null
+    try {
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "rm", "-rf", "--", $StagingRoot) | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-d", "-m", "0755", $StagingRoot) | Out-Null
+        $StagingPrepared = $true
 
-    Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $RootCA -SandboxPath "/tmp/llama-local-ca.crt"
-    Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $GeneratedConfig -SandboxPath "/tmp/opencode-local.json"
-    Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $GeneratedMetadata.Path -SandboxPath "/tmp/opencode-local-sandbox.json"
+        $StagedCA = "$StagingRoot/llama-local-ca.crt"
+        $StagedConfig = "$StagingRoot/opencode-local.json"
+        $StagedMetadata = "$StagingRoot/opencode-local-sandbox.json"
 
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/agentbox") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/llama-local-ca.crt", "/usr/local/share/ca-certificates/llama-local-ca.crt") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/llama-local-ca.crt", "/etc/agentbox/llama-ca.pem") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "update-ca-certificates") | Out-Null
+        Invoke-External "sbx" @("cp", $RootCA, "${SandboxName}:$StagedCA") | Out-Null
+        Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:$StagedConfig") | Out-Null
+        Invoke-External "sbx" @("cp", $GeneratedMetadata.Path, "${SandboxName}:$StagedMetadata") | Out-Null
 
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local-sandbox.json", "/etc/agentbox/opencode-local-sandbox.json") | Out-Null
+        Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $RootCA -SandboxPath $StagedCA
+        Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $GeneratedConfig -SandboxPath $StagedConfig
+        Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $GeneratedMetadata.Path -SandboxPath $StagedMetadata
 
-    $InstallOpenCode = 'mkdir -p "$HOME/.config/opencode" && install -m 0644 /tmp/opencode-local.json "$HOME/.config/opencode/opencode.json" && rm -f /tmp/opencode-local.json /tmp/opencode-local-sandbox.json /tmp/llama-local-ca.crt'
-    Invoke-External "sbx" @("exec", $SandboxName, "sh", "-lc", $InstallOpenCode) | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/agentbox") | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", $StagedCA, "/usr/local/share/ca-certificates/llama-local-ca.crt") | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", $StagedCA, "/etc/agentbox/llama-ca.pem") | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "update-ca-certificates") | Out-Null
+
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", $StagedMetadata, "/etc/agentbox/opencode-local-sandbox.json") | Out-Null
+
+        $InstallOpenCode = 'mkdir -p "$HOME/.config/opencode" && install -m 0644 /tmp/opencode-local-sandbox-stage/opencode-local.json "$HOME/.config/opencode/opencode.json"'
+        Invoke-External "sbx" @("exec", $SandboxName, "sh", "-lc", $InstallOpenCode) | Out-Null
+    }
+    catch {
+        $PrimaryError = $_
+        throw
+    }
+    finally {
+        if ($StagingPrepared) {
+            $CleanupResult = Invoke-SbxCapture -ArgumentList @(
+                "exec", $SandboxName,
+                "sudo", "rm", "-rf", "--", $StagingRoot
+            ) -IgnoreExitCode
+            if ($CleanupResult.ExitCode -ne 0) {
+                $CleanupMessage = "Impossibile eliminare la directory temporanea ${SandboxName}:$StagingRoot"
+                if ($null -ne $PrimaryError) {
+                    Write-Warning $CleanupMessage
+                }
+                else {
+                    throw $CleanupMessage
+                }
+            }
+        }
+    }
     return $GeneratedMetadata.Document
 }
 
