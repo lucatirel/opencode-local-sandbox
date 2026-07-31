@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("help", "bootstrap", "doctor", "server", "new", "open")]
+    [ValidateSet("help", "bootstrap", "doctor", "server", "new", "open", "stop")]
     [string]$Command = "help",
 
     [Parameter(Position = 1)]
@@ -33,6 +33,9 @@ switch ($Command) {
         }
         & (Join-Path $Scripts "open-project.ps1") -ProjectPath $Target
     }
+    "stop" {
+        & (Join-Path $Scripts "stop-session.ps1") -ProjectPath $Target
+    }
     default {
         Write-Host ""
         Write-Host "OpenCode Local Sandbox" -ForegroundColor Cyan
@@ -42,7 +45,7 @@ switch ($Command) {
         Write-Host "  .\sandbox.ps1 server                 avvia llama-server in primo piano"
         Write-Host "  .\sandbox.ps1 new nome-progetto      crea Git + sandbox e apre OpenCode"
         Write-Host "  .\sandbox.ps1 open C:\Projects\app   apre un progetto esistente"
+        Write-Host "  .\sandbox.ps1 stop [percorso]         ferma sandbox e listener, libera la GPU"
         Write-Host ""
     }
 }
-
