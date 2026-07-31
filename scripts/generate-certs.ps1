@@ -1,39 +1,31 @@
-﻿$ErrorActionPreference = "Stop"
+[CmdletBinding()]
+param()
 
-$RepoRoot = Split-Path -Parent $PSScriptRoot
-$ConfigFile = Join-Path $RepoRoot "config.local.ps1"
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "private\Common.ps1")
 
-if (-not (Test-Path $ConfigFile)) {
-    throw "config.local.ps1 is missing. Copy config.example.ps1 to config.local.ps1 and configure it."
-}
+$Config = Get-ToolConfig
+Assert-Command "mkcert"
 
-. $ConfigFile
-
-if (-not (Get-Command mkcert -ErrorAction SilentlyContinue)) {
-    throw "mkcert is not installed. Run: winget install -e --id FiloSottile.mkcert"
-}
-
-$CertDirectory = Join-Path $LlamaRoot "certs"
+$CertDirectory = Join-Path $Config.LlamaRoot "certs"
 $KeyFile = Join-Path $CertDirectory "localhost-key.pem"
 $CertFile = Join-Path $CertDirectory "localhost-cert.pem"
 
 New-Item -ItemType Directory -Force -Path $CertDirectory | Out-Null
 
-Write-Host "Installing the local mkcert CA..." -ForegroundColor Cyan
-& mkcert -install
+Write-Host "Installazione della CA locale mkcert..." -ForegroundColor Cyan
+Invoke-External "mkcert" @("-install") | Out-Null
 
-Write-Host "Generating the HTTPS certificate..." -ForegroundColor Cyan
+Write-Host "Generazione del certificato HTTPS..." -ForegroundColor Cyan
+Invoke-External "mkcert" @(
+    "-key-file", $KeyFile,
+    "-cert-file", $CertFile,
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "host.docker.internal"
+) | Out-Null
 
-& mkcert `
-    -key-file $KeyFile `
-    -cert-file $CertFile `
-    localhost `
-    127.0.0.1 `
-    ::1 `
-    host.docker.internal
+Write-Host "Certificato creato: $CertFile" -ForegroundColor Green
+Write-Host "Chiave privata locale: $KeyFile"
 
-Write-Host ""
-Write-Host "Certificate created:" -ForegroundColor Green
-Write-Host $CertFile
-Write-Host "Private key created outside the repository:" -ForegroundColor Green
-Write-Host $KeyFile
