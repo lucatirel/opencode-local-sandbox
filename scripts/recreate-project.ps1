@@ -39,7 +39,9 @@ try {
 
         Stop-SandboxSafely -SandboxName $SandboxName
         Write-Host "Rimozione della sola sandbox $SandboxName..." -ForegroundColor Cyan
-        Invoke-External "sbx" @("rm", $SandboxName) | Out-Null
+        # RICREA is already the explicit destructive confirmation. --force
+        # suppresses sbx's second prompt after the sandbox has been stopped.
+        Invoke-External "sbx" @("rm", "--force", $SandboxName) | Out-Null
         if ($null -ne (Get-SandboxRecord -SandboxName $SandboxName)) {
             throw "La sandbox $SandboxName risulta ancora presente dopo la rimozione."
         }
