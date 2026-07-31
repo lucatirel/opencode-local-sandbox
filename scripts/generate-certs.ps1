@@ -13,9 +13,6 @@ $CertFile = Join-Path $CertDirectory "localhost-cert.pem"
 
 New-Item -ItemType Directory -Force -Path $CertDirectory | Out-Null
 
-Write-Host "Installazione della CA locale mkcert..." -ForegroundColor Cyan
-Invoke-External "mkcert" @("-install") | Out-Null
-
 Write-Host "Generazione del certificato HTTPS..." -ForegroundColor Cyan
 Invoke-External "mkcert" @(
     "-key-file", $KeyFile,
@@ -28,4 +25,4 @@ Invoke-External "mkcert" @(
 
 Write-Host "Certificato creato: $CertFile" -ForegroundColor Green
 Write-Host "Chiave privata locale: $KeyFile"
-
+Write-Host "La CA non viene installata nel trust store di Windows; viene installata soltanto nelle sandbox." -ForegroundColor Yellow
