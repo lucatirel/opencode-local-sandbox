@@ -190,7 +190,7 @@ Le sandbox create prima dell'introduzione di `--no-share-skills` non possono cam
 .\sandbox.ps1 recreate "C:\Projects\nome-progetto"
 ```
 
-Il comando mostra i percorsi e richiede di digitare esattamente `RICREA`. Elimina soltanto la microVM, i pacchetti installati e le sessioni OpenCode persistenti al suo interno; non elimina ne modifica la cartella Git sull'host. Subito dopo crea una sandbox nuova con l'isolamento corrente.
+Il comando mostra i percorsi e richiede di digitare esattamente `RICREA`; quella e l'unica conferma richiesta. Elimina soltanto la microVM, i pacchetti installati e le sessioni OpenCode persistenti al suo interno; non elimina ne modifica la cartella Git sull'host. Subito dopo crea una sandbox nuova con l'isolamento corrente.
 
 ### Diagnostica
 
