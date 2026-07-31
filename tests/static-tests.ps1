@@ -52,5 +52,8 @@ finally {
 $CommonSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\private\Common.ps1") -Raw
 Assert-True ($CommonSource -match '"--sandbox"') "La policy di rete deve essere limitata alla singola sandbox."
 
-Write-Host "Static functional tests passed." -ForegroundColor Green
+$BootstrapSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\bootstrap.ps1") -Raw
+Assert-True ($BootstrapSource -match '\$ErrorActionPreference = "Continue"') "Il probe sbx deve tollerare stderr informativo su Windows PowerShell 5.1."
+Assert-True ($BootstrapSource -notmatch 'sbx ls -q \*>') "Non usare la redirezione che genera NativeCommandError con Windows PowerShell 5.1."
 
+Write-Host "Static functional tests passed." -ForegroundColor Green
