@@ -18,6 +18,12 @@ if (-not [string]::IsNullOrWhiteSpace($ProjectPath)) {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($SandboxName)) {
+    if (-not [string]::IsNullOrWhiteSpace($ProjectPath)) {
+        $Sandbox = Get-SandboxRecord -SandboxName $SandboxName
+        if ($null -ne $Sandbox) {
+            Assert-SandboxMatchesProject -Sandbox $Sandbox -ProjectPath $ProjectPath
+        }
+    }
     Stop-SandboxSafely -SandboxName $SandboxName
 }
 

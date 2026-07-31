@@ -23,11 +23,13 @@ $TopP = 0.95
 $MinP = 0
 $ReasoningFormat = "deepseek"
 $DisableThinking = $true
+$LogRetentionCount = 12
 
 $OpenCodePermission = "allow"
+$DisableSharedSkills = $true
+$AllowUnrestrictedNetwork = $false
 
 # These rules are added only to each project sandbox. The local llama endpoint
 # is always added automatically. Keep this empty for the smallest allow-list.
 # Example: @("registry.npmjs.org:443", "pypi.org:443", "files.pythonhosted.org:443")
 $AdditionalNetworkHosts = @()
-

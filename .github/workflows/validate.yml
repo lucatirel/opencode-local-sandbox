@@ -2,16 +2,24 @@ name: Validate template
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   powershell-and-json:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
-      - name: Parse PowerShell files
-        shell: pwsh
+      - name: Parse PowerShell files (Windows PowerShell 5.1)
+        shell: powershell
         run: |
           $allErrors = @()
           Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
@@ -39,6 +47,31 @@ jobs:
             Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json | Out-Null
           }
 
-      - name: Run dependency-free functional tests
+      - name: Run dependency-free functional tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\tests\static-tests.ps1
+
+      - name: Parse PowerShell files (PowerShell 7)
+        shell: pwsh
+        run: |
+          $allErrors = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors) {
+              $allErrors += $errors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($allErrors) {
+            $allErrors | ForEach-Object { Write-Error $_ }
+            throw "PowerShell parsing failed."
+          }
+
+      - name: Run dependency-free functional tests (PowerShell 7)
         shell: pwsh
         run: .\tests\static-tests.ps1

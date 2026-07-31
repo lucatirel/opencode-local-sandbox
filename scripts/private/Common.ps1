@@ -4,6 +4,95 @@ function Get-ToolRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
 
+function Get-NormalizedNetworkHosts {
+    param(
+        [object[]]$Hosts = @(),
+        [bool]$AllowUnrestricted = $false
+    )
+
+    $Seen = @{}
+    $Result = New-Object System.Collections.Generic.List[string]
+    foreach ($Item in @($Hosts)) {
+        if ($null -eq $Item) {
+            continue
+        }
+
+        $HostName = "$Item".Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($HostName)) {
+            continue
+        }
+        if ($HostName -eq "**" -and -not $AllowUnrestricted) {
+            throw "AdditionalNetworkHosts contiene '**'. Imposta AllowUnrestrictedNetwork = `$true soltanto se vuoi davvero rete senza limiti."
+        }
+        if ($HostName -match '://|[\s,/\\]') {
+            throw "Host di rete non valido: $HostName. Usa host o host:porta, senza schema, path, spazi o virgole."
+        }
+        if (-not $Seen.ContainsKey($HostName)) {
+            $Seen[$HostName] = $true
+            $Result.Add($HostName)
+        }
+    }
+    return @($Result)
+}
+
+function Assert-ToolConfig {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    foreach ($Property in @("LlamaRoot", "ModelFile", "ModelAlias", "ModelDisplayName", "ProjectsRoot", "SandboxPrefix", "SandboxMemory", "GpuLayers", "KvCacheType", "ReasoningFormat", "OpenCodePermission")) {
+        if ([string]::IsNullOrWhiteSpace("$($Config.$Property)")) {
+            throw "Configurazione non valida: $Property non puo essere vuoto."
+        }
+    }
+
+    if ($Config.ModelAlias -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+        throw "ModelAlias non valido: $($Config.ModelAlias)"
+    }
+    if ($Config.SandboxPrefix -notmatch '^[a-z0-9][a-z0-9-]{0,15}$') {
+        throw "SandboxPrefix non valido: usa da 1 a 16 caratteri minuscoli, numeri o trattini."
+    }
+    if ($Config.SandboxMemory -notmatch '^[1-9][0-9]*(?:[kKmMgGtT](?:[iI]?[bB])?)?$') {
+        throw "SandboxMemory non valido: $($Config.SandboxMemory). Esempio: 6g"
+    }
+
+    $Ranges = @(
+        @("SandboxCpus", [int]$Config.SandboxCpus, 1, 256),
+        @("LlamaPort", [int]$Config.LlamaPort, 1, 65535),
+        @("ContextSize", [int]$Config.ContextSize, 512, 1048576),
+        @("OutputTokens", [int]$Config.OutputTokens, 1, 1048576),
+        @("ServerStartupTimeoutSeconds", [int]$Config.ServerStartupTimeoutSeconds, 5, 3600),
+        @("TopK", [int]$Config.TopK, 0, 100000),
+        @("LogRetentionCount", [int]$Config.LogRetentionCount, 1, 1000)
+    )
+    foreach ($Range in $Ranges) {
+        if ($Range[1] -lt $Range[2] -or $Range[1] -gt $Range[3]) {
+            throw "Configurazione non valida: $($Range[0]) deve essere tra $($Range[2]) e $($Range[3])."
+        }
+    }
+    if ([int]$Config.OutputTokens -gt [int]$Config.ContextSize) {
+        throw "OutputTokens non puo superare ContextSize."
+    }
+    if ([double]$Config.Temperature -lt 0 -or [double]$Config.Temperature -gt 5) {
+        throw "Temperature deve essere tra 0 e 5."
+    }
+    foreach ($ProbabilityName in @("TopP", "MinP")) {
+        $Probability = [double]$Config.$ProbabilityName
+        if ($Probability -lt 0 -or $Probability -gt 1) {
+            throw "$ProbabilityName deve essere tra 0 e 1."
+        }
+    }
+    if ($Config.DisableThinking -isnot [bool]) {
+        throw "DisableThinking deve essere `$true oppure `$false."
+    }
+    if ($Config.DisableSharedSkills -isnot [bool]) {
+        throw "DisableSharedSkills deve essere `$true oppure `$false."
+    }
+    if ($Config.AllowUnrestrictedNetwork -isnot [bool]) {
+        throw "AllowUnrestrictedNetwork deve essere `$true oppure `$false."
+    }
+
+    $null = Get-NormalizedNetworkHosts -Hosts @($Config.AdditionalNetworkHosts) -AllowUnrestricted ([bool]$Config.AllowUnrestrictedNetwork)
+}
+
 function Get-ToolConfig {
     $ToolRoot = Get-ToolRoot
     $ExampleFile = Join-Path $ToolRoot "config.example.ps1"
@@ -20,7 +109,7 @@ function Get-ToolConfig {
     . $ExampleFile
     . $LocalFile
 
-    return [pscustomobject]@{
+    $Config = [pscustomobject]@{
         ToolRoot                   = $ToolRoot
         LlamaRoot                 = $LlamaRoot
         ModelFile                 = $ModelFile
@@ -42,9 +131,14 @@ function Get-ToolConfig {
         MinP                      = $MinP
         ReasoningFormat           = $ReasoningFormat
         DisableThinking           = $DisableThinking
+        DisableSharedSkills       = $DisableSharedSkills
+        AllowUnrestrictedNetwork  = $AllowUnrestrictedNetwork
+        LogRetentionCount         = $LogRetentionCount
         OpenCodePermission        = $OpenCodePermission
-        AdditionalNetworkHosts    = @($AdditionalNetworkHosts)
+        AdditionalNetworkHosts    = @(Get-NormalizedNetworkHosts -Hosts @($AdditionalNetworkHosts) -AllowUnrestricted ([bool]$AllowUnrestrictedNetwork))
     }
+    Assert-ToolConfig -Config $Config
+    return $Config
 }
 
 function Assert-Command {
@@ -62,8 +156,17 @@ function Invoke-External {
         [switch]$IgnoreExitCode
     )
 
-    & $FilePath @ArgumentList
-    $Code = $LASTEXITCODE
+    # Windows PowerShell 5.1 converts native stderr into error records. Keep
+    # informational stderr visible, but decide success from the native exit code.
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $FilePath @ArgumentList
+        $Code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
     if (-not $IgnoreExitCode -and $Code -ne 0) {
         throw "Comando fallito (exit $Code): $FilePath $($ArgumentList -join ' ')"
     }
@@ -106,21 +209,279 @@ function Get-ProjectSandboxName {
     return "$Prefix-$Slug-$Hash"
 }
 
-function Get-SandboxNames {
+function Invoke-SbxCapture {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$ArgumentList,
+        [switch]$IgnoreExitCode
+    )
+
     Assert-Command "sbx"
     $PreviousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $Output = @(& sbx ls -q 2>$null)
+        $Output = @(& sbx @ArgumentList 2>$null)
         $ExitCode = $LASTEXITCODE
     }
     finally {
         $ErrorActionPreference = $PreviousErrorActionPreference
     }
-    if ($ExitCode -ne 0) {
-        throw "Impossibile leggere le sandbox. Prova: sbx login"
+    if (-not $IgnoreExitCode -and $ExitCode -ne 0) {
+        throw "Comando sbx fallito (exit $ExitCode): sbx $($ArgumentList -join ' ')"
     }
-    return @($Output | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
+    return [pscustomobject]@{
+        Output = @($Output | ForEach-Object { "$($_)" })
+        ExitCode = $ExitCode
+    }
+}
+
+function ConvertFrom-JsonCommandOutput {
+    param([Parameter(Mandatory = $true)][object[]]$Output)
+
+    $Lines = @($Output | ForEach-Object { "$($_)" })
+    $StartIndex = -1
+    for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
+        $Trimmed = $Lines[$Index].TrimStart()
+        if ($Trimmed.StartsWith("{") -or $Trimmed.StartsWith("[")) {
+            $StartIndex = $Index
+            break
+        }
+    }
+    if ($StartIndex -lt 0) {
+        throw "Il comando non ha restituito JSON valido."
+    }
+
+    $JsonText = ($Lines[$StartIndex..($Lines.Count - 1)] -join [Environment]::NewLine)
+    try {
+        $Document = $JsonText | ConvertFrom-Json
+    }
+    catch {
+        throw "JSON non valido restituito dal comando: $($_.Exception.Message)"
+    }
+    Write-Output -NoEnumerate $Document
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    foreach ($Name in $Names) {
+        $Property = $InputObject.PSObject.Properties[$Name]
+        if ($null -ne $Property) {
+            return $Property.Value
+        }
+    }
+    return $null
+}
+
+function Get-SandboxRecords {
+    $Result = Invoke-SbxCapture -ArgumentList @("ls", "--json")
+    $Document = ConvertFrom-JsonCommandOutput -Output @($Result.Output)
+    $SandboxesProperty = $Document.PSObject.Properties["sandboxes"]
+    $Items = if ($null -ne $SandboxesProperty) { @($SandboxesProperty.Value) } else { @($Document) }
+
+    $Records = foreach ($Item in $Items) {
+        if ($null -eq $Item) {
+            continue
+        }
+        $Name = Get-ObjectPropertyValue -InputObject $Item -Names @("name", "Name")
+        if ([string]::IsNullOrWhiteSpace("$Name")) {
+            continue
+        }
+
+        $RawWorkspaces = Get-ObjectPropertyValue -InputObject $Item -Names @("workspaces", "workspace", "Workspaces", "Workspace")
+        $Workspaces = foreach ($Workspace in @($RawWorkspaces)) {
+            if ($null -eq $Workspace) {
+                continue
+            }
+            if ($Workspace -is [string]) {
+                "$Workspace"
+                continue
+            }
+            $Path = Get-ObjectPropertyValue -InputObject $Workspace -Names @("path", "Path", "source", "Source")
+            if (-not [string]::IsNullOrWhiteSpace("$Path")) {
+                "$Path"
+            }
+        }
+
+        [pscustomobject]@{
+            Name = "$Name"
+            Agent = "$(Get-ObjectPropertyValue -InputObject $Item -Names @('agent', 'Agent'))"
+            Status = "$(Get-ObjectPropertyValue -InputObject $Item -Names @('status', 'Status'))"
+            Workspaces = @($Workspaces)
+        }
+    }
+    return @($Records)
+}
+
+function Get-SandboxNames {
+    return @(Get-SandboxRecords | ForEach-Object { $_.Name })
+}
+
+function Get-SandboxRecord {
+    param([Parameter(Mandatory = $true)][string]$SandboxName)
+
+    $Matches = @(Get-SandboxRecords | Where-Object { $_.Name -eq $SandboxName } | Select-Object -First 1)
+    if ($Matches.Count -eq 0) {
+        return $null
+    }
+    return $Matches[0]
+}
+
+function Get-NormalizedProjectPath {
+    param([Parameter(Mandatory = $true)][string]$ProjectPath)
+
+    $FullPath = [IO.Path]::GetFullPath($ProjectPath)
+    return $FullPath.TrimEnd([char[]]@('\', '/')).ToLowerInvariant()
+}
+
+function Assert-SandboxMatchesProject {
+    param(
+        [Parameter(Mandatory = $true)]$Sandbox,
+        [Parameter(Mandatory = $true)][string]$ProjectPath
+    )
+
+    if ($Sandbox.Agent -ine "opencode") {
+        throw "La sandbox '$($Sandbox.Name)' usa l'agent '$($Sandbox.Agent)', non OpenCode. Scegli un altro nome o ricreala esplicitamente."
+    }
+    if (@($Sandbox.Workspaces).Count -ne 1) {
+        throw "La sandbox '$($Sandbox.Name)' deve avere esattamente un workspace host; ne risultano $(@($Sandbox.Workspaces).Count)."
+    }
+
+    $Expected = Get-NormalizedProjectPath -ProjectPath $ProjectPath
+    $Actual = Get-NormalizedProjectPath -ProjectPath $Sandbox.Workspaces[0]
+    if ($Expected -ine $Actual) {
+        throw "La sandbox '$($Sandbox.Name)' appartiene a '$($Sandbox.Workspaces[0])', non a '$ProjectPath'. Riutilizzo bloccato."
+    }
+}
+
+function ConvertTo-SbxVersion {
+    param([Parameter(Mandatory = $true)][object[]]$Output)
+
+    $VersionText = (@($Output) | ForEach-Object { "$($_)" }) -join " "
+    if ($VersionText -notmatch '(?i)(?:^|\s)v?(?<Version>[0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)') {
+        throw "Versione sbx non riconosciuta: $VersionText"
+    }
+    return [Version]$Matches.Version
+}
+
+function Test-SbxSupportsNoSharedSkills {
+    # sbx 0.37.0 accepts this flag but does not list it in `sbx create --help`.
+    # Probe the parser first; --help prevents sandbox creation. Keep the
+    # documented minimum version as a fallback for CLI builds with hidden flags.
+    $ParserProbe = Invoke-SbxCapture `
+        -ArgumentList @("create", "--no-share-skills", "--help") `
+        -IgnoreExitCode
+    if ($ParserProbe.ExitCode -eq 0) {
+        return $true
+    }
+
+    try {
+        $VersionResult = Invoke-SbxCapture -ArgumentList @("version")
+        return ((ConvertTo-SbxVersion -Output $VersionResult.Output) -ge [Version]"0.37.0")
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-SandboxCreateArguments {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$ProjectPath
+    )
+
+    $Arguments = @("create")
+    if ($Config.DisableSharedSkills) {
+        $Arguments += "--no-share-skills"
+    }
+    $Arguments += @(
+        "--name", $SandboxName,
+        "--memory", $Config.SandboxMemory,
+        "--cpus", "$($Config.SandboxCpus)",
+        "opencode", $ProjectPath
+    )
+    return $Arguments
+}
+
+function New-ProjectSandbox {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$ProjectPath
+    )
+
+    if ($Config.DisableSharedSkills -and -not (Test-SbxSupportsNoSharedSkills)) {
+        throw "Questa versione di sbx non supporta --no-share-skills. Aggiornala con: winget upgrade Docker.sbx"
+    }
+    Write-Host "Creazione sandbox isolata $SandboxName..." -ForegroundColor Cyan
+    $Arguments = @(Get-SandboxCreateArguments -Config $Config -SandboxName $SandboxName -ProjectPath $ProjectPath)
+    Invoke-External "sbx" $Arguments | Out-Null
+
+    $Sandbox = Get-SandboxRecord -SandboxName $SandboxName
+    if ($null -eq $Sandbox) {
+        throw "La sandbox $SandboxName non risulta presente dopo la creazione."
+    }
+    Assert-SandboxMatchesProject -Sandbox $Sandbox -ProjectPath $ProjectPath
+    return $Sandbox
+}
+
+function Enter-LlamaSessionLock {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    $MutexName = "Local\OpenCodeLocalSandbox-Llama-Port-$Port"
+    $Mutex = New-Object System.Threading.Mutex -ArgumentList $false, $MutexName
+    $Acquired = $false
+    try {
+        $Acquired = $Mutex.WaitOne(0)
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        $Acquired = $true
+    }
+
+    if (-not $Acquired) {
+        $Mutex.Dispose()
+        throw "Un'altra sessione OpenCode Local Sandbox sta gia usando la porta $Port. Chiudila oppure esegui .\sandbox.ps1 status."
+    }
+    return [pscustomobject]@{
+        Mutex = $Mutex
+        Name = $MutexName
+        Port = $Port
+    }
+}
+
+function Exit-LlamaSessionLock {
+    param($SessionLock)
+
+    if ($null -eq $SessionLock) {
+        return
+    }
+    try {
+        $SessionLock.Mutex.ReleaseMutex()
+    }
+    finally {
+        $SessionLock.Mutex.Dispose()
+    }
+}
+
+function Test-LlamaSessionLockAvailable {
+    param([Parameter(Mandatory = $true)][int]$Port)
+
+    $Probe = $null
+    try {
+        $Probe = Enter-LlamaSessionLock -Port $Port
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($null -ne $Probe) {
+            Exit-LlamaSessionLock -SessionLock $Probe
+        }
+    }
 }
 
 function Write-GeneratedOpenCodeConfig {
@@ -170,18 +531,139 @@ function Write-GeneratedOpenCodeConfig {
     return $Path
 }
 
+function Get-SandboxToolMetadata {
+    param([Parameter(Mandatory = $true)][string]$SandboxName)
+
+    $Command = 'if test -f /etc/agentbox/opencode-local-sandbox.json; then cat /etc/agentbox/opencode-local-sandbox.json; fi'
+    $Result = Invoke-SbxCapture -ArgumentList @("exec", $SandboxName, "sh", "-lc", $Command) -IgnoreExitCode
+    if ($Result.ExitCode -ne 0 -or $Result.Output.Count -eq 0) {
+        return $null
+    }
+    try {
+        return (ConvertFrom-JsonCommandOutput -Output @($Result.Output))
+    }
+    catch {
+        Write-Warning "Metadati non leggibili nella sandbox ${SandboxName}: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Write-GeneratedSandboxMetadata {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [Parameter(Mandatory = $true)][string]$SharedSkillsState,
+        [Parameter(Mandatory = $true)][string[]]$ManagedNetworkHosts,
+        $PreviousMetadata
+    )
+
+    $CreatedAt = $null
+    if ($null -ne $PreviousMetadata) {
+        $CreatedAt = Get-ObjectPropertyValue -InputObject $PreviousMetadata -Names @("createdAtUtc")
+    }
+    if ([string]::IsNullOrWhiteSpace("$CreatedAt")) {
+        $CreatedAt = [DateTime]::UtcNow.ToString("o")
+    }
+
+    $Document = [ordered]@{
+        schemaVersion = 1
+        managedBy = "opencode-local-sandbox"
+        sandboxName = $SandboxName
+        agent = "opencode"
+        projectPath = $ProjectPath
+        sharedSkills = $SharedSkillsState
+        managedNetworkHosts = @($ManagedNetworkHosts)
+        createdAtUtc = "$CreatedAt"
+        updatedAtUtc = [DateTime]::UtcNow.ToString("o")
+    }
+
+    $Directory = Join-Path $Config.ToolRoot ".local\generated\$SandboxName"
+    New-Item -ItemType Directory -Force -Path $Directory | Out-Null
+    $Path = Join-Path $Directory "sandbox-metadata.json"
+    $Document | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Path -Encoding UTF8
+    return [pscustomobject]@{
+        Path = $Path
+        Document = [pscustomobject]$Document
+    }
+}
+
+function Sync-SandboxNetworkPolicy {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        $PreviousMetadata
+    )
+
+    $Desired = @(Get-NormalizedNetworkHosts `
+        -Hosts (@("localhost:$($Config.LlamaPort)") + @($Config.AdditionalNetworkHosts)) `
+        -AllowUnrestricted ([bool]$Config.AllowUnrestrictedNetwork))
+
+    $Previous = @()
+    if ($null -ne $PreviousMetadata) {
+        $PreviousValue = Get-ObjectPropertyValue -InputObject $PreviousMetadata -Names @("managedNetworkHosts")
+        $Previous = @(Get-NormalizedNetworkHosts -Hosts @($PreviousValue) -AllowUnrestricted $true)
+    }
+
+    # Remove and recreate only the resources owned by this tool. This prevents
+    # duplicate and stale allow rules while preserving unrelated user rules.
+    $ManagedResources = @(Get-NormalizedNetworkHosts -Hosts (@($Previous) + @($Desired)) -AllowUnrestricted $true)
+    foreach ($Resource in $ManagedResources) {
+        $null = Invoke-SbxCapture -ArgumentList @(
+            "policy", "rm", "network",
+            "--sandbox", $SandboxName,
+            "--resource", $Resource
+        ) -IgnoreExitCode
+    }
+    if ($Desired.Count -gt 0) {
+        Invoke-External "sbx" @(
+            "policy", "allow", "network",
+            "--sandbox", $SandboxName,
+            ($Desired -join ",")
+        ) | Out-Null
+    }
+    return @($Desired)
+}
+
+function Get-SandboxFileSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $Result = Invoke-SbxCapture -ArgumentList @("exec", $SandboxName, "sha256sum", $Path)
+    foreach ($Line in @($Result.Output)) {
+        if ($Line -match '(?i)([0-9a-f]{64})') {
+            return $Matches[1].ToLowerInvariant()
+        }
+    }
+    throw "Impossibile verificare il file copiato nella sandbox: $Path"
+}
+
+function Assert-SandboxCopyMatches {
+    param(
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$HostPath,
+        [Parameter(Mandatory = $true)][string]$SandboxPath
+    )
+
+    $HostHash = (Get-FileHash -LiteralPath $HostPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $SandboxHash = Get-SandboxFileSha256 -SandboxName $SandboxName -Path $SandboxPath
+    if ($HostHash -ne $SandboxHash) {
+        throw "Copia non integra verso ${SandboxName}:$SandboxPath"
+    }
+}
+
 function Install-SandboxConfiguration {
     param(
         [Parameter(Mandatory = $true)]$Config,
-        [Parameter(Mandatory = $true)][string]$SandboxName
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [switch]$SandboxWasCreated
     )
 
     Assert-Command "sbx"
     Assert-Command "mkcert"
-
-    $AllowedHosts = @("localhost:$($Config.LlamaPort)") + @($Config.AdditionalNetworkHosts)
-    $AllowedHosts = @($AllowedHosts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, ($AllowedHosts -join ",")) | Out-Null
 
     $CARoot = (& mkcert -CAROOT).Trim()
     if ($LASTEXITCODE -ne 0) {
@@ -192,19 +674,119 @@ function Install-SandboxConfiguration {
         throw "CA mkcert non trovata. Esegui: .\sandbox.ps1 bootstrap"
     }
 
-    $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
-
     Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
-    Invoke-External "sbx" @("cp", $RootCA, "${SandboxName}:/tmp/llama-local-ca.crt") | Out-Null
-    Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
+    $PreviousMetadata = Get-SandboxToolMetadata -SandboxName $SandboxName
+    $AllowedHosts = @(Sync-SandboxNetworkPolicy -Config $Config -SandboxName $SandboxName -PreviousMetadata $PreviousMetadata)
 
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/agentbox") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/llama-local-ca.crt", "/usr/local/share/ca-certificates/llama-local-ca.crt") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/llama-local-ca.crt", "/etc/agentbox/llama-ca.pem") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "update-ca-certificates") | Out-Null
+    $PreviousSharedSkills = $null
+    if ($null -ne $PreviousMetadata) {
+        $PreviousSharedSkills = Get-ObjectPropertyValue -InputObject $PreviousMetadata -Names @("sharedSkills")
+    }
+    $SharedSkillsState = if ($SandboxWasCreated) {
+        if ($Config.DisableSharedSkills) { "disabled" } else { "enabled" }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace("$PreviousSharedSkills")) {
+        "$PreviousSharedSkills"
+    }
+    else {
+        "unknown"
+    }
 
-    $InstallOpenCode = 'mkdir -p "$HOME/.config/opencode" && install -m 0644 /tmp/opencode-local.json "$HOME/.config/opencode/opencode.json"'
-    Invoke-External "sbx" @("exec", $SandboxName, "sh", "-lc", $InstallOpenCode) | Out-Null
+    $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
+    $GeneratedMetadata = Write-GeneratedSandboxMetadata `
+        -Config $Config `
+        -SandboxName $SandboxName `
+        -ProjectPath $ProjectPath `
+        -SharedSkillsState $SharedSkillsState `
+        -ManagedNetworkHosts $AllowedHosts `
+        -PreviousMetadata $PreviousMetadata
+
+    # sbx cp creates files as root. A regular agent cannot unlink root-owned
+    # entries directly from sticky /tmp, so stage them in one root-managed
+    # directory and always remove that exact directory with sudo.
+    $StagingRoot = "/tmp/opencode-local-sandbox-stage"
+    $StagingPrepared = $false
+    $PrimaryError = $null
+    try {
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "rm", "-rf", "--", $StagingRoot) | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-d", "-m", "0755", $StagingRoot) | Out-Null
+        $StagingPrepared = $true
+
+        $StagedCA = "$StagingRoot/llama-local-ca.crt"
+        $StagedConfig = "$StagingRoot/opencode-local.json"
+        $StagedMetadata = "$StagingRoot/opencode-local-sandbox.json"
+
+        Invoke-External "sbx" @("cp", $RootCA, "${SandboxName}:$StagedCA") | Out-Null
+        Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:$StagedConfig") | Out-Null
+        Invoke-External "sbx" @("cp", $GeneratedMetadata.Path, "${SandboxName}:$StagedMetadata") | Out-Null
+
+        Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $RootCA -SandboxPath $StagedCA
+        Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $GeneratedConfig -SandboxPath $StagedConfig
+        Assert-SandboxCopyMatches -SandboxName $SandboxName -HostPath $GeneratedMetadata.Path -SandboxPath $StagedMetadata
+
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/agentbox") | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", $StagedCA, "/usr/local/share/ca-certificates/llama-local-ca.crt") | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", $StagedCA, "/etc/agentbox/llama-ca.pem") | Out-Null
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "update-ca-certificates") | Out-Null
+
+        Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", $StagedMetadata, "/etc/agentbox/opencode-local-sandbox.json") | Out-Null
+
+        $InstallOpenCode = 'mkdir -p "$HOME/.config/opencode" && install -m 0644 /tmp/opencode-local-sandbox-stage/opencode-local.json "$HOME/.config/opencode/opencode.json"'
+        Invoke-External "sbx" @("exec", $SandboxName, "sh", "-lc", $InstallOpenCode) | Out-Null
+    }
+    catch {
+        $PrimaryError = $_
+        throw
+    }
+    finally {
+        if ($StagingPrepared) {
+            $CleanupResult = Invoke-SbxCapture -ArgumentList @(
+                "exec", $SandboxName,
+                "sudo", "rm", "-rf", "--", $StagingRoot
+            ) -IgnoreExitCode
+            if ($CleanupResult.ExitCode -ne 0) {
+                $CleanupMessage = "Impossibile eliminare la directory temporanea ${SandboxName}:$StagingRoot"
+                if ($null -ne $PrimaryError) {
+                    Write-Warning $CleanupMessage
+                }
+                else {
+                    throw $CleanupMessage
+                }
+            }
+        }
+    }
+    return $GeneratedMetadata.Document
+}
+
+function Test-SandboxLlamaApi {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName
+    )
+
+    $Url = "https://host.docker.internal:$($Config.LlamaPort)/v1/models"
+    $Result = Invoke-SbxCapture -ArgumentList @(
+        "exec", $SandboxName,
+        "curl", "--silent", "--show-error", "--fail",
+        "--connect-timeout", "5", "--max-time", "15",
+        "--cacert", "/etc/agentbox/llama-ca.pem",
+        $Url
+    )
+    $Document = ConvertFrom-JsonCommandOutput -Output @($Result.Output)
+    $Data = Get-ObjectPropertyValue -InputObject $Document -Names @("data")
+    $ModelIds = foreach ($Model in @($Data)) {
+        if ($null -eq $Model) {
+            continue
+        }
+        $Identifier = Get-ObjectPropertyValue -InputObject $Model -Names @("id")
+        if (-not [string]::IsNullOrWhiteSpace("$Identifier")) {
+            "$Identifier"
+        }
+    }
+    if (@($ModelIds) -notcontains $Config.ModelAlias) {
+        throw "L'API raggiunta dalla sandbox non espone il modello atteso '$($Config.ModelAlias)'. Modelli: $(@($ModelIds) -join ', ')"
+    }
+    return $true
 }
 
 function Test-LlamaApi {
@@ -315,6 +897,22 @@ function Assert-LlamaPortAvailable {
     throw "La porta $($Config.LlamaPort) ha gia un listener: $Details. Per evitare istanze ambigue esegui prima: .\sandbox.ps1 stop"
 }
 
+function Remove-OldLlamaLogs {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    $LogDirectory = Join-Path $Config.ToolRoot ".local\logs"
+    if (-not (Test-Path -LiteralPath $LogDirectory -PathType Container)) {
+        return
+    }
+    $KeepFiles = [int]$Config.LogRetentionCount * 2
+    $OldLogs = @(Get-ChildItem -LiteralPath $LogDirectory -Filter "llama-*.log" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -Skip $KeepFiles)
+    foreach ($Log in $OldLogs) {
+        Remove-Item -LiteralPath $Log.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Start-ManagedLlamaServer {
     param([Parameter(Mandatory = $true)]$Config)
 
@@ -343,6 +941,7 @@ function Start-ManagedLlamaServer {
             -RedirectStandardOutput $StdOutLog `
             -RedirectStandardError $StdErrLog `
             -PassThru
+        Remove-OldLlamaLogs -Config $Config
     }
     finally {
         if ($null -eq $PreviousThinking) {
@@ -357,32 +956,41 @@ function Start-ManagedLlamaServer {
     Write-Host "Log: $StdErrLog"
     Write-Host "Attendo il caricamento del modello..." -ForegroundColor Cyan
 
-    $Deadline = (Get-Date).AddSeconds([int]$Config.ServerStartupTimeoutSeconds)
-    while ((Get-Date) -lt $Deadline) {
-        $Process.Refresh()
-        if ($Process.HasExited) {
-            $Tail = @(Get-Content -LiteralPath $StdErrLog -Tail 30 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
-            throw "llama-server e terminato durante l'avvio (exit $($Process.ExitCode)).`n$Tail"
-        }
-        if (Test-LlamaApi -Port ([int]$Config.LlamaPort)) {
-            $Owners = @(Get-LlamaListenerProcesses -Port ([int]$Config.LlamaPort))
-            if ($Owners.Id -notcontains $Process.Id) {
-                Stop-ManagedLlamaServer -ManagedProcess $Process -Port ([int]$Config.LlamaPort)
-                throw "Il listener sulla porta $($Config.LlamaPort) non appartiene al processo appena avviato."
+    try {
+        $Deadline = (Get-Date).AddSeconds([int]$Config.ServerStartupTimeoutSeconds)
+        while ((Get-Date) -lt $Deadline) {
+            $Process.Refresh()
+            if ($Process.HasExited) {
+                $Tail = @(Get-Content -LiteralPath $StdErrLog -Tail 30 -ErrorAction SilentlyContinue) -join [Environment]::NewLine
+                throw "llama-server e terminato durante l'avvio (exit $($Process.ExitCode)).`n$Tail"
             }
-            Write-Host "llama-server pronto." -ForegroundColor Green
-            return [pscustomobject]@{
-                Process = $Process
-                Port = [int]$Config.LlamaPort
-                StdOutLog = $StdOutLog
-                StdErrLog = $StdErrLog
+            if (Test-LlamaApi -Port ([int]$Config.LlamaPort)) {
+                $Owners = @(Get-LlamaListenerProcesses -Port ([int]$Config.LlamaPort))
+                if ($Owners.Id -notcontains $Process.Id) {
+                    throw "Il listener sulla porta $($Config.LlamaPort) non appartiene al processo appena avviato."
+                }
+                Write-Host "llama-server pronto." -ForegroundColor Green
+                return [pscustomobject]@{
+                    Process = $Process
+                    Port = [int]$Config.LlamaPort
+                    StdOutLog = $StdOutLog
+                    StdErrLog = $StdErrLog
+                }
             }
+            Start-Sleep -Seconds 2
         }
-        Start-Sleep -Seconds 2
+        throw "llama-server non ha risposto entro $($Config.ServerStartupTimeoutSeconds) secondi. Controlla: $StdErrLog"
     }
-
-    Stop-ManagedLlamaServer -ManagedProcess $Process -Port ([int]$Config.LlamaPort)
-    throw "llama-server non ha risposto entro $($Config.ServerStartupTimeoutSeconds) secondi. Controlla: $StdErrLog"
+    catch {
+        $StartupError = $_
+        try {
+            Stop-ManagedLlamaServer -ManagedProcess $Process -Port ([int]$Config.LlamaPort)
+        }
+        catch {
+            Write-Warning "Pulizia del server fallita dopo un errore di avvio: $($_.Exception.Message)"
+        }
+        throw $StartupError
+    }
 }
 
 function Stop-ManagedLlamaServer {
