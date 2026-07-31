@@ -202,12 +202,20 @@ function Install-SandboxConfiguration {
 function Test-LlamaApi {
     param([Parameter(Mandatory = $true)][int]$Port)
 
+    $Client = New-Object System.Net.Sockets.TcpClient
     try {
-        $null = Invoke-RestMethod -Uri "https://localhost:$Port/v1/models" -Method Get -TimeoutSec 3
-        return $true
+        $Connect = $Client.BeginConnect("127.0.0.1", $Port, $null, $null)
+        if (-not $Connect.AsyncWaitHandle.WaitOne(3000, $false)) {
+            return $false
+        }
+        $Client.EndConnect($Connect)
+        return $Client.Connected
     }
     catch {
         return $false
+    }
+    finally {
+        $Client.Dispose()
     }
 }
 
