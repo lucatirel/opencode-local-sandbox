@@ -43,6 +43,10 @@ $NoisyJson = ConvertFrom-JsonCommandOutput -Output @(
 )
 Assert-Equal "oc-alpha" $NoisyJson.sandboxes[0].name "Il parser deve ignorare l'output informativo prima del JSON."
 
+Assert-Equal ([Version]"0.37.0") (ConvertTo-SbxVersion -Output @("sbx version: v0.37.0 8b65b864")) "La versione minima con skill isolate deve essere riconosciuta."
+Assert-Equal ([Version]"0.37.1") (ConvertTo-SbxVersion -Output @("sbx", "version: v0.37.1", "abcdef")) "Il parser versione deve tollerare output su piu righe."
+Assert-Throws { ConvertTo-SbxVersion -Output @("versione sconosciuta") } "Un output versione ambiguo deve essere rifiutato."
+
 $MatchingSandbox = [pscustomobject]@{
     Name = $First
     Agent = "opencode"
@@ -105,6 +109,7 @@ finally {
 $CommonSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\private\Common.ps1") -Raw
 Assert-True ($CommonSource -match '"--sandbox"') "La policy di rete deve essere limitata alla singola sandbox."
 Assert-True ($CommonSource -match '"policy", "rm", "network"') "Le policy gestite devono poter rimuovere regole obsolete."
+Assert-True ($CommonSource -match '"create", "--no-share-skills", "--help"') "Il supporto skill deve interrogare il parser, non fidarsi dell'help incompleto."
 
 $CreateArguments = @(Get-SandboxCreateArguments -Config $FakeConfig -SandboxName "oc-test-00000000" -ProjectPath "C:\Projects\Test")
 Assert-True ($CreateArguments -contains "--no-share-skills") "Le nuove sandbox devono disabilitare lo store skill condiviso."
