@@ -35,6 +35,7 @@ Non bisogna creare progetti dentro `opencode-local-sandbox` e non bisogna copiar
 
 - `llama-server` gira sull'host Windows e ascolta soltanto su `127.0.0.1`.
 - La sandbox raggiunge il server tramite `host.docker.internal` e HTTPS.
+- La CA di sviluppo non viene resa attendibile globalmente da Windows: viene installata soltanto dentro ogni sandbox.
 - Ogni progetto riceve una sandbox con nome stabile derivato da nome e percorso.
 - Soltanto la cartella del progetto viene montata in scrittura.
 - OpenCode, pacchetti installati e Docker Engine della sandbox rimangono nella microVM.
@@ -85,8 +86,9 @@ Il bootstrap:
 5. chiede la cartella generale dei progetti;
 6. crea `config.local.ps1`, escluso da Git;
 7. effettua il login a Docker Sandboxes quando necessario;
-8. genera e considera attendibile il certificato HTTPS;
-9. esegue il controllo `doctor`.
+8. genera il certificato HTTPS senza installare una CA globale in Windows;
+9. installa la CA soltanto nelle sandbox quando vengono create o aperte;
+10. esegue il controllo `doctor`.
 
 Su una nuova installazione di `sbx`, per la rete scegli **Locked Down** se vuoi il profilo piu restrittivo. Le regole aggiunte da questo template sono specifiche della singola sandbox. Un'eventuale policy globale gia esistente continua comunque ad applicarsi.
 
@@ -268,10 +270,11 @@ sbx login
 .\sandbox.ps1 server
 ```
 
-In un altro terminale:
+In un altro terminale, indicando esplicitamente la CA senza aggiungerla al trust globale di Windows:
 
 ```powershell
-Invoke-RestMethod https://localhost:8080/v1/models
+$CARoot = (& mkcert -CAROOT).Trim()
+curl.exe --cacert "$CARoot\rootCA.pem" https://localhost:8080/v1/models
 ```
 
 ### Controllare le richieste di rete
