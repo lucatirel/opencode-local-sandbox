@@ -309,6 +309,7 @@ La seconda operazione reinstalla la CA nella sandbox.
 |   |-- run-opencode.ps1
 |   |-- setup-sandbox.ps1
 |   `-- private\Common.ps1
+|-- tests\static-tests.ps1
 |-- .github\workflows\validate.yml
 |-- .gitattributes
 |-- .gitignore
@@ -316,4 +317,3 @@ La seconda operazione reinstalla la CA nella sandbox.
 ```
 
 `run-opencode.ps1` e `setup-sandbox.ps1` restano come wrapper di compatibilita; per il normale utilizzo usa `sandbox.ps1`.
-
