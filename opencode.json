@@ -1,0 +1,48 @@
+﻿{
+  "$schema": "https://opencode.ai/config.json",
+
+  "enabled_providers": [
+    "agentbox-llama"
+  ],
+
+  "provider": {
+    "agentbox-llama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen3 locale",
+
+      "options": {
+        "baseURL": "https://host.docker.internal:8080/v1",
+        "timeout": false
+      },
+
+      "models": {
+        "qwen3-8b-q4": {
+          "name": "Qwen3 8B Q4_K_M",
+
+          "limit": {
+            "context": 32768,
+            "output": 2048
+          }
+        }
+      }
+    }
+  },
+
+  "model": "agentbox-llama/qwen3-8b-q4",
+  "small_model": "agentbox-llama/qwen3-8b-q4",
+
+  "agent": {
+    "build": {
+      "temperature": 0.6
+    }
+  },
+
+  "compaction": {
+    "auto": true,
+    "prune": true
+  },
+
+  "permission": "allow",
+  "autoupdate": false,
+  "share": "disabled"
+}

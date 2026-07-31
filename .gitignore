@@ -1,0 +1,39 @@
+﻿# Local files and backups
+config.local.ps1
+*.pre-repo.bak
+.local/
+certs-local/
+
+# Models and compiled binaries
+*.gguf
+*.exe
+build/
+
+# Secrets and certificates
+api-key.txt
+*.key
+*-key.pem
+rootCA.pem
+rootCA-key.pem
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Temporary tests
+opencode-smoke-test*/
+test.py
+test.txt
+
+# Logs and editor files
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
