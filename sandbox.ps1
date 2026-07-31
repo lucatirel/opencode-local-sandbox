@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("help", "bootstrap", "doctor", "server", "new", "open", "stop")]
+    [ValidateSet("help", "bootstrap", "doctor", "status", "server", "new", "open", "stop", "recreate")]
     [string]$Command = "help",
 
     [Parameter(Position = 1)]
@@ -17,6 +17,9 @@ switch ($Command) {
     }
     "doctor" {
         & (Join-Path $Scripts "doctor.ps1")
+    }
+    "status" {
+        & (Join-Path $Scripts "status.ps1") -ProjectPath $Target
     }
     "server" {
         & (Join-Path $Scripts "start-llama.ps1")
@@ -36,16 +39,24 @@ switch ($Command) {
     "stop" {
         & (Join-Path $Scripts "stop-session.ps1") -ProjectPath $Target
     }
+    "recreate" {
+        if ([string]::IsNullOrWhiteSpace($Target)) {
+            $Target = Read-Host "Percorso completo del progetto"
+        }
+        & (Join-Path $Scripts "recreate-project.ps1") -ProjectPath $Target
+    }
     default {
         Write-Host ""
         Write-Host "OpenCode Local Sandbox" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  .\sandbox.ps1 bootstrap              prima configurazione del PC"
         Write-Host "  .\sandbox.ps1 doctor                 controlla installazione e file"
+        Write-Host "  .\sandbox.ps1 status [percorso]      mostra sandbox, workspace e listener"
         Write-Host "  .\sandbox.ps1 server                 avvia llama-server in primo piano"
         Write-Host "  .\sandbox.ps1 new nome-progetto      crea Git + sandbox e apre OpenCode"
         Write-Host "  .\sandbox.ps1 open C:\Projects\app   apre un progetto esistente"
         Write-Host "  .\sandbox.ps1 stop [percorso]         ferma sandbox e listener, libera la GPU"
+        Write-Host "  .\sandbox.ps1 recreate percorso      ricrea soltanto la VM, con conferma"
         Write-Host ""
     }
 }
