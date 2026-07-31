@@ -39,3 +39,6 @@ jobs:
             Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json | Out-Null
           }
 
+      - name: Run dependency-free functional tests
+        shell: pwsh
+        run: .\tests\static-tests.ps1
