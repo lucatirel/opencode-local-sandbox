@@ -56,4 +56,7 @@ $BootstrapSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\bootst
 Assert-True ($BootstrapSource -match '\$ErrorActionPreference = "Continue"') "Il probe sbx deve tollerare stderr informativo su Windows PowerShell 5.1."
 Assert-True ($BootstrapSource -notmatch 'sbx ls -q \*>') "Non usare la redirezione che genera NativeCommandError con Windows PowerShell 5.1."
 
+$CertificateSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\generate-certs.ps1") -Raw
+Assert-True ($CertificateSource -notmatch 'mkcert.+-install') "La CA locale non deve essere installata nel trust store globale di Windows."
+
 Write-Host "Static functional tests passed." -ForegroundColor Green
