@@ -1,15 +1,10 @@
-﻿$ErrorActionPreference = "Stop"
+[CmdletBinding()]
+param(
+    [string]$ProjectPath = (Get-Location).Path,
+    [string]$SandboxName
+)
 
-$RepoRoot = Split-Path -Parent $PSScriptRoot
-$ConfigFile = Join-Path $RepoRoot "config.local.ps1"
+$ErrorActionPreference = "Stop"
+Write-Warning "run-opencode.ps1 e mantenuto per compatibilita. Preferisci: .\sandbox.ps1 open <percorso>"
+& (Join-Path $PSScriptRoot "open-project.ps1") -ProjectPath $ProjectPath -SandboxName $SandboxName
 
-if (-not (Test-Path $ConfigFile)) {
-    throw "config.local.ps1 is missing. Copy config.example.ps1 to config.local.ps1 and configure it."
-}
-
-. $ConfigFile
-
-Set-Location $RepoRoot
-
-Write-Host "Starting OpenCode sandbox: $SandboxName" -ForegroundColor Cyan
-& sbx run --name $SandboxName
