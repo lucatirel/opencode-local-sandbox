@@ -110,6 +110,9 @@ $CommonSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\private\C
 Assert-True ($CommonSource -match '"--sandbox"') "La policy di rete deve essere limitata alla singola sandbox."
 Assert-True ($CommonSource -match '"policy", "rm", "network"') "Le policy gestite devono poter rimuovere regole obsolete."
 Assert-True ($CommonSource -match '"create", "--no-share-skills", "--help"') "Il supporto skill deve interrogare il parser, non fidarsi dell'help incompleto."
+Assert-True ($CommonSource -match '/tmp/opencode-local-sandbox-stage') "I file copiati devono usare una directory di staging dedicata."
+Assert-True ($CommonSource -match '"sudo", "rm", "-rf", "--", \$StagingRoot') "Lo staging root-owned deve essere ripulito con privilegi espliciti."
+Assert-True ($CommonSource -notmatch 'rm -f /tmp/opencode-local\.json') "L'agent non deve tentare di cancellare file root-owned dallo sticky /tmp."
 
 $CreateArguments = @(Get-SandboxCreateArguments -Config $FakeConfig -SandboxName "oc-test-00000000" -ProjectPath "C:\Projects\Test")
 Assert-True ($CreateArguments -contains "--no-share-skills") "Le nuove sandbox devono disabilitare lo store skill condiviso."
@@ -144,6 +147,7 @@ $RecreateSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\recreat
 Assert-True ($RecreateSource -match 'Scrivi RICREA') "La rimozione persistente deve richiedere conferma esplicita."
 Assert-True ($RecreateSource -notmatch 'Remove-Item.+ProjectPath') "La ricreazione non deve eliminare la cartella host."
 Assert-True ($RecreateSource -match 'Enter-LlamaSessionLock') "La ricreazione non deve gareggiare con una sessione attiva."
+Assert-True ($RecreateSource -match '"rm", "--force", \$SandboxName') "Dopo RICREA, sbx non deve chiedere una seconda conferma."
 
 $StatusSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\status.ps1") -Raw
 Assert-True ($StatusSource -match 'Test-LlamaSessionLockAvailable') "Lo stato deve mostrare anche il lock del launcher."
