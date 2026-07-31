@@ -1,0 +1,41 @@
+name: Validate template
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  powershell-and-json:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell files
+        shell: pwsh
+        run: |
+          $allErrors = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors) {
+              $allErrors += $errors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($allErrors) {
+            $allErrors | ForEach-Object { Write-Error $_ }
+            throw "PowerShell parsing failed."
+          }
+
+      - name: Validate JSON files
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse -Filter *.json | ForEach-Object {
+            Write-Host "Validating $($_.FullName)"
+            Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json | Out-Null
+          }
+
