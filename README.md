@@ -14,6 +14,8 @@ Una volta configurato il PC:
 
 crea automaticamente una cartella Git sotto `Projects`, crea una sandbox dedicata, avvia `llama-server` se necessario, installa CA e configurazione OpenCode nella sandbox e apre OpenCode.
 
+Il listener avviato automaticamente appartiene alla sessione: quando esci da OpenCode con `Ctrl+C`, lo script ferma la sandbox, termina `llama-server`, verifica che la porta sia libera e rilascia la VRAM.
+
 Per un progetto gia esistente:
 
 ```powershell
@@ -37,6 +39,8 @@ Non bisogna creare progetti dentro `opencode-local-sandbox` e non bisogna copiar
 - La sandbox raggiunge il server tramite `host.docker.internal` e HTTPS.
 - La CA di sviluppo non viene resa attendibile globalmente da Windows: viene installata soltanto dentro ogni sandbox.
 - Ogni progetto riceve una sandbox con nome stabile derivato da nome e percorso.
+- Ogni sessione automatica possiede una sola istanza di `llama-server` e la termina in un blocco `finally`.
+- Se la porta configurata ha gia un listener, l'apertura si interrompe invece di riutilizzarlo o creare un'istanza ambigua.
 - Soltanto la cartella del progetto viene montata in scrittura.
 - OpenCode, pacchetti installati e Docker Engine della sandbox rimangono nella microVM.
 - La configurazione OpenCode viene generata e installata dentro la sandbox; non viene copiata nel progetto.
@@ -115,13 +119,35 @@ Git e gia inizializzato dallo script: non chiedere all'LLM di creare un'altra re
 
 Se la relativa sandbox non esiste viene creata. Se esiste viene riutilizzata e la configurazione viene aggiornata.
 
-### Server manuale
+### Ciclo di vita automatico del server
 
-Normalmente `new` e `open` aprono una seconda finestra PowerShell e avviano il server quando non risponde. Per avviarlo manualmente:
+Normalmente `new` e `open` avviano `llama-server` come processo nascosto gestito dalla sessione. I log vengono salvati sotto `.local\logs`. Quando OpenCode termina, anche con `Ctrl+C`, vengono arrestati prima la sandbox e poi il listener; lo script controlla inoltre che la porta sia stata liberata.
+
+Se un listener e gia presente, il comando si ferma con un errore e richiede una pulizia esplicita. Questo evita di confondere un server precedente con quello della nuova sessione.
+
+Per avviare volontariamente il server in primo piano:
 
 ```powershell
 .\sandbox.ps1 server
 ```
+
+In questa modalita manuale il server resta nel terminale corrente e `Ctrl+C` agisce direttamente sul processo.
+
+### Arresto e pulizia espliciti
+
+Per fermare il listener locale e, indicando il progetto, anche la relativa sandbox:
+
+```powershell
+.\sandbox.ps1 stop "C:\Projects\nome-progetto"
+```
+
+Senza percorso ferma solamente un eventuale `llama-server` in ascolto sulla porta configurata:
+
+```powershell
+.\sandbox.ps1 stop
+```
+
+Il comando termina automaticamente solo un processo chiamato `llama-server`. Se la porta appartiene a un altro programma, si rifiuta di terminarlo e mostra PID e nome.
 
 ### Diagnostica
 
@@ -138,9 +164,10 @@ Normalmente `new` e `open` aprono una seconda finestra PowerShell e avviano il s
 .\sandbox.ps1 server
 .\sandbox.ps1 new nome-progetto
 .\sandbox.ps1 open C:\percorso\progetto
+.\sandbox.ps1 stop [C:\percorso\progetto]
 ```
 
-Gli script sotto `scripts\` espongono opzioni avanzate, per esempio `-NoAttach`, `-NoAutoStartServer`, `-NoGit` e un nome sandbox esplicito.
+Gli script sotto `scripts\` espongono opzioni avanzate, per esempio `-NoAttach`, `-NoGit`, `-ReuseExistingServer` e un nome sandbox esplicito. Il riutilizzo di un listener preesistente deve essere richiesto esplicitamente e quel listener non viene terminato automaticamente.
 
 ## Configurazione locale
 
@@ -270,6 +297,21 @@ sbx login
 .\sandbox.ps1 server
 ```
 
+### GPU ancora allocata o listener rimasto attivo
+
+```powershell
+.\sandbox.ps1 stop
+```
+
+Poi verifica:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+Get-Process llama-server -ErrorAction SilentlyContinue
+```
+
+Entrambi devono restituire vuoto. Il comando `stop` controlla comunque la porta e restituisce errore se il listener non e stato eliminato.
+
 In un altro terminale, indicando esplicitamente la CA senza aggiungerla al trust globale di Windows:
 
 ```powershell
@@ -308,6 +350,7 @@ La seconda operazione reinstalla la CA nella sandbox.
 |   |-- generate-certs.ps1
 |   |-- new-project.ps1
 |   |-- open-project.ps1
+|   |-- stop-session.ps1
 |   |-- start-llama.ps1
 |   |-- run-opencode.ps1
 |   |-- setup-sandbox.ps1

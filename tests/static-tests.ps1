@@ -59,4 +59,16 @@ Assert-True ($BootstrapSource -notmatch 'sbx ls -q \*>') "Non usare la redirezio
 $CertificateSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\generate-certs.ps1") -Raw
 Assert-True ($CertificateSource -notmatch 'mkcert.+-install') "La CA locale non deve essere installata nel trust store globale di Windows."
 
+$ArgumentString = ConvertTo-ProcessArgumentString -ArgumentList @("-m", "C:\Models With Spaces\model.gguf", "--port", "8080")
+Assert-Equal '-m "C:\Models With Spaces\model.gguf" --port 8080' $ArgumentString "Quoting degli argomenti del processo errato."
+
+$OpenProjectSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\open-project.ps1") -Raw
+Assert-True ($OpenProjectSource -match 'finally\s*\{') "open-project deve garantire cleanup tramite finally."
+Assert-True ($OpenProjectSource -match 'Stop-ManagedLlamaServer') "open-project deve arrestare il listener gestito."
+Assert-True ($OpenProjectSource -match 'Stop-SandboxSafely') "open-project deve arrestare la sandbox."
+Assert-True ($OpenProjectSource -notmatch 'Start-LlamaWindowAndWait') "Non avviare listener indipendenti dal ciclo di vita della sessione."
+
+$DispatcherSource = Get-Content -LiteralPath (Join-Path $ToolRoot "sandbox.ps1") -Raw
+Assert-True ($DispatcherSource -match '"stop"') "Il dispatcher deve esporre un comando stop esplicito."
+
 Write-Host "Static functional tests passed." -ForegroundColor Green
