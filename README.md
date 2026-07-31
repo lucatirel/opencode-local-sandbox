@@ -71,7 +71,7 @@ Il bootstrap puo installare tramite `winget` i due strumenti piccoli mancanti:
 - Docker Sandboxes CLI (`sbx`);
 - `mkcert`.
 
-Per il profilo di isolamento predefinito serve una versione di `sbx` che esponga `--no-share-skills` (Docker Sandboxes 0.37.0 o successiva). `doctor` lo controlla per funzionalita, non soltanto leggendo il numero di versione. Se hai una versione precedente:
+Per il profilo di isolamento predefinito serve Docker Sandboxes 0.37.0 o successiva, che accetta `--no-share-skills`. In 0.37.0 il flag funziona ma puo non comparire in `sbx create --help`: `doctor` interroga direttamente il parser e usa la versione documentata soltanto come fallback. Se hai una versione precedente:
 
 ```powershell
 winget upgrade Docker.sbx
