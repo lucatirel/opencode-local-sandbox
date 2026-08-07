@@ -113,10 +113,6 @@ function Get-ProjectSandboxName {
 function Get-SandboxNames {
     Assert-Command "sbx"
 
-    # Windows PowerShell 5.1 turns harmless native stderr (for example
-    # "Starting sandboxd daemon...") into a terminating NativeCommandError
-    # when ErrorActionPreference is Stop. Probe sbx with Continue and judge
-    # success from its actual process exit code instead.
     $PreviousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -167,7 +163,7 @@ function Write-GeneratedOpenCodeConfig {
                 npm = "@ai-sdk/openai-compatible"
                 name = "llama.cpp locale"
                 options = [ordered]@{
-                    baseURL = "https://host.docker.internal:$($Config.LlamaPort)/v1"
+                    baseURL = "http://host.docker.internal:$($Config.LlamaPort)/v1"
                     timeout = $false
                 }
                 models = $Models
@@ -197,31 +193,15 @@ function Install-SandboxConfiguration {
     )
 
     Assert-Command "sbx"
-    Assert-Command "mkcert"
 
     $AllowedHosts = @("localhost:$($Config.LlamaPort)") + @($Config.AdditionalNetworkHosts)
     $AllowedHosts = @($AllowedHosts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, ($AllowedHosts -join ",")) | Out-Null
 
-    $CARoot = (& mkcert -CAROOT).Trim()
-    if ($LASTEXITCODE -ne 0) {
-        throw "Impossibile determinare la CA di mkcert."
-    }
-    $RootCA = Join-Path $CARoot "rootCA.pem"
-    if (-not (Test-Path -LiteralPath $RootCA -PathType Leaf)) {
-        throw "CA mkcert non trovata. Esegui: .\sandbox.ps1 bootstrap"
-    }
-
     $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
 
     Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
-    Invoke-External "sbx" @("cp", $RootCA, "${SandboxName}:/tmp/llama-local-ca.crt") | Out-Null
     Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
-
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/agentbox") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/llama-local-ca.crt", "/usr/local/share/ca-certificates/llama-local-ca.crt") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/llama-local-ca.crt", "/etc/agentbox/llama-ca.pem") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "update-ca-certificates") | Out-Null
 
     $InstallOpenCode = 'mkdir -p "$HOME/.config/opencode" && install -m 0644 /tmp/opencode-local.json "$HOME/.config/opencode/opencode.json"'
     Invoke-External "sbx" @("exec", $SandboxName, "sh", "-lc", $InstallOpenCode) | Out-Null
