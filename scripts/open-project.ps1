@@ -32,6 +32,9 @@ if (-not (Test-LlamaApi -Port ([int]$Config.LlamaPort))) {
 $Existing = @(Get-SandboxNames)
 if ($Existing -notcontains $SandboxName) {
     Write-Host "Creazione sandbox $SandboxName..." -ForegroundColor Cyan
+    Write-Host "La prima creazione puo richiedere qualche minuto; mostro l'output di sbx qui sotto." -ForegroundColor DarkGray
+
+    $CreateStarted = Get-Date
     Invoke-External "sbx" @(
         "create",
         "--name", $SandboxName,
@@ -39,7 +42,9 @@ if ($Existing -notcontains $SandboxName) {
         "--cpus", "$($Config.SandboxCpus)",
         "opencode",
         $ProjectPath
-    ) | Out-Null
+    )
+    $Elapsed = (Get-Date) - $CreateStarted
+    Write-Host ("Sandbox creata in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
 }
 else {
     Write-Host "Sandbox esistente: $SandboxName" -ForegroundColor Yellow
