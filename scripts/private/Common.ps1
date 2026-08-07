@@ -16,34 +16,38 @@ function Get-ToolConfig {
         throw "Configurazione locale mancante. Esegui: .\sandbox.ps1 bootstrap"
     }
 
-    # Loading defaults before local values keeps old, shorter config.local.ps1 files compatible.
     . $ExampleFile
     . $LocalFile
 
     return [pscustomobject]@{
-        ToolRoot                   = $ToolRoot
-        LlamaRoot                 = $LlamaRoot
-        ModelFile                 = $ModelFile
-        ModelAlias                = $ModelAlias
-        ModelDisplayName          = $ModelDisplayName
-        ProjectsRoot              = $ProjectsRoot
-        SandboxPrefix             = $SandboxPrefix
-        SandboxMemory             = $SandboxMemory
-        SandboxCpus               = $SandboxCpus
-        LlamaPort                 = $LlamaPort
-        ContextSize               = $ContextSize
-        OutputTokens              = $OutputTokens
+        ToolRoot                     = $ToolRoot
+        LlamaRoot                   = $LlamaRoot
+        ModelFile                   = $ModelFile
+        ModelAlias                  = $ModelAlias
+        ModelDisplayName            = $ModelDisplayName
+        ProjectsRoot                = $ProjectsRoot
+        SandboxPrefix               = $SandboxPrefix
+        SandboxMemory               = $SandboxMemory
+        SandboxCpus                 = $SandboxCpus
+        LlamaPort                   = $LlamaPort
+        ContextSize                 = $ContextSize
+        OutputTokens                = $OutputTokens
         ServerStartupTimeoutSeconds = $ServerStartupTimeoutSeconds
-        GpuLayers                 = $GpuLayers
-        KvCacheType               = $KvCacheType
-        Temperature               = $Temperature
-        TopK                      = $TopK
-        TopP                      = $TopP
-        MinP                      = $MinP
-        ReasoningFormat           = $ReasoningFormat
-        DisableThinking           = $DisableThinking
-        OpenCodePermission        = $OpenCodePermission
-        AdditionalNetworkHosts    = @($AdditionalNetworkHosts)
+        LoadMode                    = $LoadMode
+        CpuMoeLayers                = $CpuMoeLayers
+        GpuLayers                   = $GpuLayers
+        Fit                         = $Fit
+        KvCacheType                 = $KvCacheType
+        BatchSize                   = $BatchSize
+        UBatchSize                  = $UBatchSize
+        CacheRamMiB                 = $CacheRamMiB
+        Parallel                    = $Parallel
+        Temperature                 = $Temperature
+        TopK                        = $TopK
+        TopP                        = $TopP
+        MinP                        = $MinP
+        DisableThinking             = $DisableThinking
+        AdditionalNetworkHosts      = @($AdditionalNetworkHosts)
     }
 }
 
@@ -130,6 +134,17 @@ function Write-GeneratedOpenCodeConfig {
         }
     }
 
+    $Permissions = [ordered]@{
+        "*"                = "deny"
+        read               = "allow"
+        edit               = "allow"
+        glob               = "allow"
+        grep               = "allow"
+        list               = "allow"
+        bash               = "ask"
+        external_directory = "deny"
+    }
+
     $Document = [ordered]@{
         '$schema' = "https://opencode.ai/config.json"
         enabled_providers = @("agentbox-llama")
@@ -145,12 +160,11 @@ function Write-GeneratedOpenCodeConfig {
             }
         }
         model = "agentbox-llama/$($Config.ModelAlias)"
-        small_model = "agentbox-llama/$($Config.ModelAlias)"
+        permission = $Permissions
         agent = [ordered]@{
-            build = [ordered]@{ temperature = [double]$Config.Temperature }
+            title = [ordered]@{ disable = $true }
         }
         compaction = [ordered]@{ auto = $true; prune = $true }
-        permission = $Config.OpenCodePermission
         autoupdate = $false
         share = "disabled"
     }
