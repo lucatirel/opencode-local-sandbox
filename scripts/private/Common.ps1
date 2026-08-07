@@ -112,8 +112,22 @@ function Get-ProjectSandboxName {
 
 function Get-SandboxNames {
     Assert-Command "sbx"
-    $Output = @(& sbx ls -q 2>$null)
-    if ($LASTEXITCODE -ne 0) {
+
+    # Windows PowerShell 5.1 turns harmless native stderr (for example
+    # "Starting sandboxd daemon...") into a terminating NativeCommandError
+    # when ErrorActionPreference is Stop. Probe sbx with Continue and judge
+    # success from its actual process exit code instead.
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $Output = @(& sbx ls -q 2>$null)
+        $SbxListExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+
+    if ($SbxListExitCode -ne 0) {
         throw "Impossibile leggere le sandbox. Prova: sbx login"
     }
     return @($Output | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
