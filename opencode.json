@@ -12,29 +12,36 @@
         "timeout": false
       },
       "models": {
-        "qwen3-8b-q4": {
-          "name": "Qwen3 8B Q4_K_M",
+        "qwen36-35b-q3": {
+          "name": "Qwen3.6 35B A3B Q3",
           "limit": {
-            "context": 32768,
+            "context": 16384,
             "output": 2048
           }
         }
       }
     }
   },
-  "model": "agentbox-llama/qwen3-8b-q4",
-  "small_model": "agentbox-llama/qwen3-8b-q4",
+  "model": "agentbox-llama/qwen36-35b-q3",
+  "permission": {
+    "*": "deny",
+    "read": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "bash": "ask",
+    "external_directory": "deny"
+  },
   "agent": {
-    "build": {
-      "temperature": 0.6
+    "title": {
+      "disable": true
     }
   },
   "compaction": {
     "auto": true,
     "prune": true
   },
-  "permission": "allow",
   "autoupdate": false,
   "share": "disabled"
 }
-
