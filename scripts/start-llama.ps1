@@ -26,24 +26,24 @@ else {
 $Arguments = @(
     "-m", $ModelPath,
     "--alias", $Config.ModelAlias,
-    "--host", "127.0.0.1",
-    "--port", "$($Config.LlamaPort)",
+    "--load-mode", $Config.LoadMode,
+    "--n-cpu-moe", "$($Config.CpuMoeLayers)",
+    "--gpu-layers", $Config.GpuLayers,
+    "--fit", $Config.Fit,
     "--ctx-size", "$($Config.ContextSize)",
-    "--n-gpu-layers", $Config.GpuLayers,
-    "--flash-attn", "on",
     "--cache-type-k", $Config.KvCacheType,
     "--cache-type-v", $Config.KvCacheType,
-    "--parallel", "1",
-    "--jinja",
-    "--reasoning-format", $Config.ReasoningFormat,
-    "--temp", "$($Config.Temperature)",
-    "--top-k", "$($Config.TopK)",
-    "--top-p", "$($Config.TopP)",
-    "--min-p", "$($Config.MinP)",
-    "--no-context-shift",
+    "--flash-attn", "on",
+    "--cache-ram", "$($Config.CacheRamMiB)",
+    "--parallel", "$($Config.Parallel)",
+    "--batch-size", "$($Config.BatchSize)",
+    "--ubatch-size", "$($Config.UBatchSize)",
+    "--host", "127.0.0.1",
+    "--port", "$($Config.LlamaPort)",
+    "--no-ui",
+    "--no-warmup",
     "--cors-origins", "localhost",
     "--no-cors-credentials",
-    "--no-webui",
     "--ssl-key-file", $KeyFile,
     "--ssl-cert-file", $CertFile
 )
@@ -53,10 +53,10 @@ Write-Host "Avvio llama-server" -ForegroundColor Cyan
 Write-Host "Modello: $ModelPath"
 Write-Host "Endpoint: https://127.0.0.1:$($Config.LlamaPort)/v1"
 Write-Host "Contesto: $($Config.ContextSize)"
+Write-Host "Preset: cpu-moe=$($Config.CpuMoeLayers), batch=$($Config.BatchSize), ubatch=$($Config.UBatchSize), KV=$($Config.KvCacheType)"
 Write-Host ""
 
 & $ServerExe @Arguments
 if ($LASTEXITCODE -ne 0) {
     throw "llama-server terminato con exit code $LASTEXITCODE."
 }
-
