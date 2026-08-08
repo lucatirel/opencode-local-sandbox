@@ -203,8 +203,11 @@ function Install-SandboxConfiguration {
     Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
     Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
 
-    $InstallOpenCode = 'mkdir -p "$HOME/.config/opencode" && install -m 0644 /tmp/opencode-local.json "$HOME/.config/opencode/opencode.json"'
-    Invoke-External "sbx" @("exec", $SandboxName, "sh", "-lc", $InstallOpenCode) | Out-Null
+    # Install as managed config so OpenCode sees the same configuration regardless
+    # of which user/home the sandbox agent uses, and project-local config cannot
+    # accidentally point back to 127.0.0.1 on the sandbox itself.
+    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/opencode") | Out-Null
+    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local.json", "/etc/opencode/opencode.json") | Out-Null
 }
 
 function Test-LlamaApi {
@@ -227,23 +230,64 @@ function Test-LlamaApi {
     }
 }
 
+function Stop-LlamaProcessTree {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [int]$Port = 8080
+    )
+
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    Write-Host "Arresto llama-server avviato da questa sessione..." -ForegroundColor Cyan
+
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & taskkill.exe /PID $ProcessId /T /F 1>$null 2>$null
+        $TaskKillExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+
+    if ($TaskKillExitCode -ne 0 -and (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+
+    $Deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $Deadline) {
+        if (-not (Test-LlamaApi -Port $Port)) {
+            Write-Host "llama-server arrestato." -ForegroundColor Green
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    Write-Warning "Il processo launcher e stato terminato, ma la porta $Port risponde ancora."
+}
+
 function Start-LlamaWindowAndWait {
     param([Parameter(Mandatory = $true)]$Config)
 
     $Script = Join-Path $Config.ToolRoot "scripts\start-llama.ps1"
     $QuotedScript = '"' + $Script + '"'
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit -ExecutionPolicy Bypass -File $QuotedScript" | Out-Null
+    $Launcher = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit -ExecutionPolicy Bypass -File $QuotedScript" -PassThru
 
     $Deadline = (Get-Date).AddSeconds([int]$Config.ServerStartupTimeoutSeconds)
     Write-Host "Attendo che llama-server carichi il modello..." -ForegroundColor Cyan
     while ((Get-Date) -lt $Deadline) {
         if (Test-LlamaApi -Port ([int]$Config.LlamaPort)) {
             Write-Host "llama-server pronto." -ForegroundColor Green
-            return $true
+            return [pscustomobject]@{
+                ProcessId = $Launcher.Id
+                Port      = [int]$Config.LlamaPort
+            }
         }
         Start-Sleep -Seconds 2
     }
 
-    Write-Warning "llama-server non ha risposto entro $($Config.ServerStartupTimeoutSeconds) secondi. Controlla la finestra del server."
-    return $false
+    Stop-LlamaProcessTree -ProcessId $Launcher.Id -Port ([int]$Config.LlamaPort)
+    throw "llama-server non ha risposto entro $($Config.ServerStartupTimeoutSeconds) secondi."
 }
