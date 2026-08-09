@@ -29,6 +29,11 @@ function Get-ToolConfig {
         SandboxPrefix               = $SandboxPrefix
         SandboxMemory               = $SandboxMemory
         SandboxCpus                 = $SandboxCpus
+        UseCloneMode                = [bool]$UseCloneMode
+        AllowFullWeb                = [bool]$AllowFullWeb
+        DisableSharedSkills         = [bool]$DisableSharedSkills
+        DisableSshAgentForwarding   = [bool]$DisableSshAgentForwarding
+        DestroyWorkSandboxOnExit    = [bool]$DestroyWorkSandboxOnExit
         LlamaPort                   = $LlamaPort
         ContextSize                 = $ContextSize
         OutputTokens                = $OutputTokens
@@ -81,6 +86,16 @@ function Resolve-ProjectDirectory {
         throw "Cartella progetto non trovata: $ProjectPath"
     }
     return (Resolve-Path -LiteralPath $ProjectPath).Path
+}
+
+function Assert-GitRepository {
+    param([Parameter(Mandatory = $true)][string]$ProjectPath)
+
+    Assert-Command "git"
+    & git -C $ProjectPath rev-parse --show-toplevel 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Il profilo hardened usa clone mode e richiede un repository Git. Inizializza Git nel progetto prima di aprirlo."
+    }
 }
 
 function Get-ProjectSandboxName {
@@ -144,16 +159,9 @@ function Write-GeneratedOpenCodeConfig {
         }
     }
 
-    $Permissions = [ordered]@{
-        "*"                = "deny"
-        read               = "allow"
-        edit               = "allow"
-        glob               = "allow"
-        grep               = "allow"
-        list               = "allow"
-        bash               = "ask"
-        external_directory = "deny"
-    }
+    # The microVM is the trust boundary. Inside it the agent is intentionally
+    # autonomous: edits, shell commands, installs, and tool use require no prompts.
+    $Permissions = [ordered]@{ "*" = "allow" }
 
     $Document = [ordered]@{
         '$schema' = "https://opencode.ai/config.json"
@@ -194,18 +202,26 @@ function Install-SandboxConfiguration {
 
     Assert-Command "sbx"
 
-    $AllowedHosts = @("localhost:$($Config.LlamaPort)") + @($Config.AdditionalNetworkHosts)
-    $AllowedHosts = @($AllowedHosts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, ($AllowedHosts -join ",")) | Out-Null
+    # host.docker.internal is rewritten by the sandbox proxy to localhost. Only the
+    # model port is explicitly opened toward the host. Full-web wildcard applies
+    # to normal outbound web traffic; Docker still blocks private, loopback and
+    # link-local ranges at the network layer.
+    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "localhost:$($Config.LlamaPort)") | Out-Null
+
+    if ($Config.AllowFullWeb) {
+        Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "**") | Out-Null
+    }
+    elseif ($Config.AdditionalNetworkHosts.Count -gt 0) {
+        $AllowedHosts = @($Config.AdditionalNetworkHosts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        if ($AllowedHosts.Count -gt 0) {
+            Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, ($AllowedHosts -join ",")) | Out-Null
+        }
+    }
 
     $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
 
     Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
     Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
-
-    # Install as managed config so OpenCode sees the same configuration regardless
-    # of which user/home the sandbox agent uses, and project-local config cannot
-    # accidentally point back to 127.0.0.1 on the sandbox itself.
     Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/opencode") | Out-Null
     Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local.json", "/etc/opencode/opencode.json") | Out-Null
 }
