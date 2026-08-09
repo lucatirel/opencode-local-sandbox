@@ -15,12 +15,24 @@ $Config = Get-ToolConfig
 Assert-Command "sbx"
 
 $ProjectPath = Resolve-ProjectDirectory -ProjectPath $ProjectPath
+if ($Config.UseCloneMode) {
+    Assert-GitRepository -ProjectPath $ProjectPath
+}
+
 if ([string]::IsNullOrWhiteSpace($SandboxName)) {
     $SandboxName = Get-ProjectSandboxName -ProjectPath $ProjectPath -Prefix $Config.SandboxPrefix
+    if ($Config.UseCloneMode) {
+        $SandboxName = "$SandboxName-clone"
+    }
 }
 
 $ServerLauncher = $null
 $ServerWasAlreadyRunning = Test-LlamaApi -Port ([int]$Config.LlamaPort)
+$SavedSshAuthSock = $env:SSH_AUTH_SOCK
+
+if ($Config.DisableSshAgentForwarding) {
+    Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue
+}
 
 try {
     if (-not $ServerWasAlreadyRunning) {
@@ -34,18 +46,25 @@ try {
 
     $Existing = @(Get-SandboxNames)
     if ($Existing -notcontains $SandboxName) {
-        Write-Host "Creazione sandbox $SandboxName..." -ForegroundColor Cyan
-        Write-Host "La prima creazione puo richiedere qualche minuto; mostro l'output di sbx qui sotto." -ForegroundColor DarkGray
+        Write-Host "Creazione sandbox hardened $SandboxName..." -ForegroundColor Cyan
+        Write-Host "Host repo read-only; lavoro in clone privato della microVM." -ForegroundColor DarkGray
 
-        $CreateStarted = Get-Date
-        Invoke-External "sbx" @(
+        $CreateArgs = @(
             "create",
             "--name", $SandboxName,
             "--memory", $Config.SandboxMemory,
-            "--cpus", "$($Config.SandboxCpus)",
-            "opencode",
-            $ProjectPath
+            "--cpus", "$($Config.SandboxCpus)"
         )
+        if ($Config.UseCloneMode) {
+            $CreateArgs += "--clone"
+        }
+        if ($Config.DisableSharedSkills) {
+            $CreateArgs += "--no-share-skills"
+        }
+        $CreateArgs += @("opencode", $ProjectPath)
+
+        $CreateStarted = Get-Date
+        Invoke-External "sbx" $CreateArgs
         $Elapsed = (Get-Date) - $CreateStarted
         Write-Host ("Sandbox creata in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
     }
@@ -53,13 +72,19 @@ try {
         Write-Host "Sandbox esistente: $SandboxName" -ForegroundColor Yellow
     }
 
-    Write-Host "Aggiornamento configurazione OpenCode e policy locale..." -ForegroundColor Cyan
+    Write-Host "Applico full-web, endpoint llama isolato e configurazione OpenCode no-approval..." -ForegroundColor Cyan
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
 
     Write-Host ""
-    Write-Host "Progetto: $ProjectPath" -ForegroundColor Green
+    Write-Host "Progetto host: $ProjectPath" -ForegroundColor Green
     Write-Host "Sandbox: $SandboxName" -ForegroundColor Green
-    Write-Host "La sandbox vede in scrittura soltanto il workspace montato."
+    if ($Config.UseCloneMode) {
+        Write-Host "Modalita: CLONE - repo host read-only; modifiche nella copia privata." -ForegroundColor Green
+    }
+    if ($Config.AllowFullWeb) {
+        Write-Host "Rete: Internet HTTP/HTTPS completo; host/LAN/private ranges restano isolati da Docker." -ForegroundColor Green
+    }
+    Write-Host "OpenCode: nessun approval prompt dentro la microVM." -ForegroundColor Green
     Write-Host ""
 
     if (-not $NoAttach) {
@@ -69,8 +94,16 @@ try {
             throw "OpenCode/sbx terminato con exit code $LASTEXITCODE."
         }
     }
+
+    if ($Config.DestroyWorkSandboxOnExit) {
+        Write-Warning "Distruzione automatica richiesta, ma prima va completato il workflow Git di handoff sicuro."
+    }
 }
 finally {
+    if ($Config.DisableSshAgentForwarding -and $null -ne $SavedSshAuthSock) {
+        $env:SSH_AUTH_SOCK = $SavedSshAuthSock
+    }
+
     if ($null -ne $ServerLauncher) {
         Stop-LlamaProcessTree -ProcessId ([int]$ServerLauncher.ProcessId) -Port ([int]$ServerLauncher.Port)
     }
