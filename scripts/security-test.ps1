@@ -84,7 +84,9 @@ try {
     $Code = Invoke-SbxExitCode -Sandbox $SandboxName -Args @("sh", "-lc", "test ! -r '$CanarySandboxPath'")
     Add-Result "Host file outside workspace inaccessible" ($Code -eq 0) $CanarySandboxPath
 
-    $Code = Invoke-SbxExitCode -Sandbox $SandboxName -Args @("sh", "-lc", "test -z \"`$SSH_AUTH_SOCK\"")
+    # Single-quoted PowerShell string keeps $SSH_AUTH_SOCK literal for the shell
+    # running inside the sandbox instead of interpolating it on the Windows host.
+    $Code = Invoke-SbxExitCode -Sandbox $SandboxName -Args @("sh", "-lc", 'test -z "$SSH_AUTH_SOCK"')
     Add-Result "Host SSH agent not forwarded" ($Code -eq 0) "SSH_AUTH_SOCK deve essere vuoto"
 
     $Code = Invoke-SbxExitCode -Sandbox $SandboxName -Args @("sh", "-lc", "docker info >/dev/null 2>&1")
