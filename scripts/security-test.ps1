@@ -72,8 +72,18 @@ try {
     $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
     Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
 
-    $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsS --connect-timeout 3 --max-time 5 http://192.168.0.1 >/dev/null")
-    Add-Check "Private/LAN address blocked" ($R.Code -ne 0) $(if ($R.Text) { $R.Text } else { "blocked/failed as expected" })
+    # Bypass HTTP(S)_PROXY deliberately. We are testing whether compromised code can
+    # talk directly to private/link-local networks, not what synthetic response the
+    # Docker policy proxy returns for an HTTP request.
+    $LanTargets = @("10.0.0.1", "172.16.0.1", "192.168.0.1", "192.168.1.1", "169.254.169.254")
+    $ReachablePrivate = @()
+    $LanDetails = @()
+    foreach ($Target in $LanTargets) {
+        $R = Run-Sbx $Sandbox @("sh", "-lc", "curl --noproxy '*' -sS -o /dev/null --connect-timeout 2 --max-time 3 http://$Target/")
+        $LanDetails += "$Target=exit$($R.Code)"
+        if ($R.Code -eq 0) { $ReachablePrivate += $Target }
+    }
+    Add-Check "Direct private/LAN bypass blocked" ($ReachablePrivate.Count -eq 0) $(if ($ReachablePrivate.Count -gt 0) { "DIRECT REACHABLE: " + ($ReachablePrivate -join ", ") } else { $LanDetails -join "; " })
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "touch /run/sandbox/source/OCBOX_MUST_NOT_WRITE 2>/dev/null")
     Add-Check "Host repository source read-only" ($R.Code -ne 0) "write exit=$($R.Code)"
