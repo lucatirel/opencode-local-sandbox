@@ -144,6 +144,21 @@ function Get-SandboxNames {
     return @($Output | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
 }
 
+function Get-PrivateNetworkDenyResources {
+    # Explicit egress guardrails. Deny rules take precedence over the full-web
+    # wildcard, so arbitrary public Internet remains available while common LAN,
+    # VPN/overlay, link-local and IPv6-local ranges remain unreachable.
+    return @(
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "fc00::/7",
+        "fe80::/10"
+    )
+}
+
 function Write-GeneratedOpenCodeConfig {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -202,10 +217,8 @@ function Install-SandboxConfiguration {
 
     Assert-Command "sbx"
 
-    # host.docker.internal is rewritten by the sandbox proxy to localhost. Only the
-    # model port is explicitly opened toward the host. Full-web wildcard applies
-    # to normal outbound web traffic; Docker still blocks private, loopback and
-    # link-local ranges at the network layer.
+    # This is the only intentional host service exception. The sandbox proxy maps
+    # host.docker.internal to host localhost, and only this model port is allowed.
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "localhost:$($Config.LlamaPort)") | Out-Null
 
     if ($Config.AllowFullWeb) {
@@ -217,6 +230,12 @@ function Install-SandboxConfiguration {
             Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, ($AllowedHosts -join ",")) | Out-Null
         }
     }
+
+    # Defense in depth: even with allow "**", explicitly deny address space that can
+    # represent the user's LAN, VPN/overlay networks or link-local services. Docker's
+    # policy evaluator gives deny rules precedence over allows.
+    $PrivateDeny = @(Get-PrivateNetworkDenyResources)
+    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $SandboxName, ($PrivateDeny -join ",")) | Out-Null
 
     $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
 
