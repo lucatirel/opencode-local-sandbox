@@ -10,6 +10,18 @@ $SandboxPrefix = "oc"
 $SandboxMemory = "6g"
 $SandboxCpus = 6
 
+# Hardened agent profile.
+# The agent gets full privileges and unrestricted HTTP/HTTPS inside the microVM,
+# while the host repository is exposed read-only and work happens in a private clone.
+$UseCloneMode = $true
+$AllowFullWeb = $true
+$DisableSharedSkills = $true
+$DisableSshAgentForwarding = $true
+
+# Keep work sandboxes after the agent exits until the safe Git handoff workflow is
+# implemented. Security-test sandboxes are always disposable and removed automatically.
+$DestroyWorkSandboxOnExit = $false
+
 $LlamaPort = 8080
 $ContextSize = 16384
 $OutputTokens = 2048
@@ -33,7 +45,6 @@ $TopP = 0.95
 $MinP = 0
 $DisableThinking = $true
 
-# These rules are added only to each project sandbox. The local llama endpoint
-# is always added automatically. Keep this empty for the smallest allow-list.
-# Example: @("registry.npmjs.org:443", "pypi.org:443", "files.pythonhosted.org:443")
+# Used only when $AllowFullWeb is $false. The local llama endpoint is always
+# allowed automatically.
 $AdditionalNetworkHosts = @()
