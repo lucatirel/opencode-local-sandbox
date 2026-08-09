@@ -39,7 +39,7 @@ function Invoke-SbxExitCode {
 }
 
 $Results = New-Object System.Collections.Generic.List[object]
-$Nonce = "{0:x8}" -f (Get-Random -Maximum [int]::MaxValue)
+$Nonce = [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $SandboxName = "oc-security-$Nonce"
 $Root = Join-Path $env:TEMP "ocbox-security-$Nonce"
 $Repo = Join-Path $Root "repo"
