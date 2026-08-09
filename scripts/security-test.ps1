@@ -67,15 +67,17 @@ try {
     Write-Host "Creo microVM usa-e-getta: $Sandbox" -ForegroundColor Cyan
     Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**") | Out-Null
+
+    # Full public web, but never RFC1918/CGNAT/link-local/IPv6-local space.
+    $PrivateDeny = @(Get-PrivateNetworkDenyResources)
+    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $Sandbox, ($PrivateDeny -join ",")) | Out-Null
+
     Write-Host "Raccolgo evidenze dall'interno della microVM..." -ForegroundColor DarkGray
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
     Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
 
-    # Bypass HTTP(S)_PROXY deliberately. We are testing whether compromised code can
-    # talk directly to private/link-local networks, not what synthetic response the
-    # Docker policy proxy returns for an HTTP request.
-    $LanTargets = @("10.0.0.1", "172.16.0.1", "192.168.0.1", "192.168.1.1", "169.254.169.254")
+    $LanTargets = @("10.0.0.1", "172.16.0.1", "192.168.0.1", "192.168.1.1", "100.64.0.1", "169.254.169.254")
     $ReachablePrivate = @()
     $LanDetails = @()
     foreach ($Target in $LanTargets) {
