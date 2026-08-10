@@ -145,9 +145,8 @@ function Get-SandboxNames {
 }
 
 function Get-PrivateNetworkDenyResources {
-    # Explicit egress guardrails. Deny rules take precedence over the full-web
-    # wildcard, so arbitrary public Internet remains available while common LAN,
-    # VPN/overlay, link-local and IPv6-local ranges remain unreachable.
+    # Explicit egress guardrails for LAN/VPN/overlay/link-local space. These
+    # deny rules remain in force even when public HTTP/HTTPS is broadly allowed.
     return @(
         "10.0.0.0/8",
         "100.64.0.0/10",
@@ -217,12 +216,16 @@ function Install-SandboxConfiguration {
 
     Assert-Command "sbx"
 
-    # This is the only intentional host service exception. The sandbox proxy maps
-    # host.docker.internal to host localhost, and only this model port is allowed.
+    # The only intentional host-service exception. Docker rewrites
+    # host.docker.internal to localhost before policy evaluation.
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "localhost:$($Config.LlamaPort)") | Out-Null
 
     if ($Config.AllowFullWeb) {
-        Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "**") | Out-Null
+        # Broad PUBLIC web access without `allow **`, which also opened arbitrary
+        # Windows localhost services through host.docker.internal in testing.
+        # Standard HTTP/HTTPS on any destination remains available; non-web ports
+        # stay default-deny unless explicitly listed below.
+        Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "**:80,**:443") | Out-Null
     }
     elseif ($Config.AdditionalNetworkHosts.Count -gt 0) {
         $AllowedHosts = @($Config.AdditionalNetworkHosts | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
@@ -231,11 +234,12 @@ function Install-SandboxConfiguration {
         }
     }
 
-    # Defense in depth: even with allow "**", explicitly deny address space that can
-    # represent the user's LAN, VPN/overlay networks or link-local services. Docker's
-    # policy evaluator gives deny rules precedence over allows.
-    $PrivateDeny = @(Get-PrivateNetworkDenyResources)
-    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $SandboxName, ($PrivateDeny -join ",")) | Out-Null
+    # Defense in depth. Private/link-local space is always denied. Because the
+    # public-web rules also syntactically match localhost:80/443, deny those host
+    # ports explicitly. All other localhost ports remain default-deny; only the
+    # model port above is deliberately allowed.
+    $NetworkDeny = @((Get-PrivateNetworkDenyResources) + @("localhost:80", "localhost:443"))
+    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $SandboxName, ($NetworkDeny -join ",")) | Out-Null
 
     $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
 
