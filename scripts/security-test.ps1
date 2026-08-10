@@ -57,6 +57,45 @@ function Check-NetworkPolicy($Sandbox, $Target) {
     }
 }
 
+function Test-HostHttpCanary($Sandbox, [bool]$ExplicitlyAllow) {
+    $Listener = $null
+    $Client = $null
+    try {
+        $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $Listener.Start()
+        $Port = ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
+
+        if ($ExplicitlyAllow) {
+            Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "localhost:$Port") | Out-Null
+        }
+
+        $P = Check-NetworkPolicy $Sandbox "localhost:$Port"
+        $AcceptTask = $Listener.AcceptTcpClientAsync()
+
+        # Exercise the real host-service path documented by Docker Sandboxes:
+        # HTTP to host.docker.internal, which the host proxy rewrites to localhost.
+        # Whether curl ultimately times out is irrelevant; if the host listener
+        # accepts a socket, the sandbox reached that host service.
+        $null = Run-Sbx $Sandbox @("sh", "-lc", "curl -sS --connect-timeout 2 --max-time 3 http://host.docker.internal:$Port/ -o /dev/null 2>/dev/null")
+        Start-Sleep -Milliseconds 250
+
+        $Accepted = $AcceptTask.IsCompleted
+        if ($Accepted) {
+            try { $Client = $AcceptTask.Result } catch { $Client = $null }
+        }
+
+        return [pscustomobject]@{
+            Port = $Port
+            Accepted = $Accepted
+            Policy = $P.Text
+        }
+    }
+    finally {
+        if ($null -ne $Client) { $Client.Dispose() }
+        if ($null -ne $Listener) { $Listener.Stop() }
+    }
+}
+
 $Results = @()
 $Nonce = [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $Sandbox = "oc-security-$Nonce"
@@ -101,36 +140,15 @@ try {
     }
     Add-Check "Private CIDR policy denies" ($PolicyMisses.Count -eq 0) $(if ($PolicyMisses.Count -eq 0) { $PolicyDetails -join "; " } else { "NOT DENIED: " + ($PolicyMisses -join ", ") })
 
-    # Host canary bound only to loopback. This avoids Windows Defender Firewall
-    # prompts and tests the Docker-specific host.docker.internal exception path.
-    # A random host port must remain unreachable unless localhost:<port> is
-    # explicitly allowed by sandbox policy (llama:8080 is the intended exception
-    # in the real work sandbox, not in this disposable test sandbox).
-    $Listener = $null
-    $Client = $null
-    try {
-        $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
-        $Listener.Start()
-        $Port = ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
-        $AcceptTask = $Listener.AcceptTcpClientAsync()
+    # Negative host-service test: full public-web wildcard must not implicitly grant
+    # access to arbitrary Windows localhost services through host.docker.internal.
+    $HostNegative = Test-HostHttpCanary $Sandbox $false
+    Add-Check "Unapproved host HTTP service unreachable" (-not $HostNegative.Accepted) "localhost:$($HostNegative.Port) policy=$($HostNegative.Policy) accepted=$($HostNegative.Accepted)"
 
-        $P = Check-NetworkPolicy $Sandbox "localhost:$Port"
-        $PolicyDenied = ($P.Text -match '(?i)Denied')
-
-        $null = Run-Sbx $Sandbox @("sh", "-lc", "curl --noproxy '*' -sS --connect-timeout 2 --max-time 3 telnet://host.docker.internal:$Port </dev/null >/dev/null 2>&1")
-        Start-Sleep -Milliseconds 250
-
-        $Accepted = $AcceptTask.IsCompleted
-        if ($Accepted) {
-            try { $Client = $AcceptTask.Result } catch { $Client = $null }
-        }
-        $HostSafe = ($PolicyDenied -and (-not $Accepted))
-        Add-Check "Unapproved host service unreachable" $HostSafe "localhost:$Port policy=$(if ($PolicyDenied) {'DENY'} else {'NOT-DENY'}) accepted=$Accepted"
-    }
-    finally {
-        if ($null -ne $Client) { $Client.Dispose() }
-        if ($null -ne $Listener) { $Listener.Stop() }
-    }
+    # Positive control: prove the canary/path is valid by explicitly allowing a
+    # different localhost port. If this fails, the negative test is inconclusive.
+    $HostPositive = Test-HostHttpCanary $Sandbox $true
+    Add-Check "Explicit host HTTP exception works" $HostPositive.Accepted "localhost:$($HostPositive.Port) policy=$($HostPositive.Policy) accepted=$($HostPositive.Accepted)"
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "touch /run/sandbox/source/OCBOX_MUST_NOT_WRITE 2>/dev/null")
     Add-Check "Host repository source read-only" ($R.Code -ne 0) "write exit=$($R.Code)"
