@@ -57,27 +57,6 @@ function Check-NetworkPolicy($Sandbox, $Target) {
     }
 }
 
-function Get-HostPrivateIPv4 {
-    $Addresses = @()
-    try {
-        $Addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
-            Where-Object {
-                $_.AddressState -eq "Preferred" -and
-                $_.IPAddress -notmatch '^127\.' -and
-                (
-                    $_.IPAddress -match '^10\.' -or
-                    $_.IPAddress -match '^192\.168\.' -or
-                    $_.IPAddress -match '^172\.(1[6-9]|2[0-9]|3[01])\.'
-                )
-            } |
-            Select-Object -ExpandProperty IPAddress -Unique)
-    }
-    catch {
-        $Addresses = @()
-    }
-    return $Addresses
-}
-
 $Results = @()
 $Nonce = [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $Sandbox = "oc-security-$Nonce"
@@ -111,8 +90,6 @@ try {
     $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
     Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
 
-    # First verify the policy itself against explicit ports. Bare IP checks default
-    # to port 443, so use :80 here to match the runtime probes precisely.
     $PolicyTargets = @("10.0.0.1:80", "172.16.0.1:80", "192.168.0.1:80", "192.168.1.1:80", "100.64.0.1:80", "169.254.169.254:80")
     $PolicyMisses = @()
     $PolicyDetails = @()
@@ -124,53 +101,35 @@ try {
     }
     Add-Check "Private CIDR policy denies" ($PolicyMisses.Count -eq 0) $(if ($PolicyMisses.Count -eq 0) { $PolicyDetails -join "; " } else { "NOT DENIED: " + ($PolicyMisses -join ", ") })
 
-    # Do not infer host/LAN reachability from an arbitrary RFC1918 address. A sandbox
-    # may itself use private address space for its virtual gateway. Instead create a
-    # real TCP canary on each private Windows host interface and see whether that
-    # listener actually receives a connection from the sandbox.
-    $HostIPs = @(Get-HostPrivateIPv4)
-    $ReachedHost = @()
-    $HostProbeDetails = @()
-    foreach ($HostIP in $HostIPs) {
-        $Listener = $null
-        $Client = $null
-        try {
-            $BindAddress = [System.Net.IPAddress]::Parse($HostIP)
-            $Listener = New-Object System.Net.Sockets.TcpListener($BindAddress, 0)
-            $Listener.Start()
-            $Port = ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
-            $AcceptTask = $Listener.AcceptTcpClientAsync()
+    # Host canary bound only to loopback. This avoids Windows Defender Firewall
+    # prompts and tests the Docker-specific host.docker.internal exception path.
+    # A random host port must remain unreachable unless localhost:<port> is
+    # explicitly allowed by sandbox policy (llama:8080 is the intended exception
+    # in the real work sandbox, not in this disposable test sandbox).
+    $Listener = $null
+    $Client = $null
+    try {
+        $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $Listener.Start()
+        $Port = ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
+        $AcceptTask = $Listener.AcceptTcpClientAsync()
 
-            $P = Check-NetworkPolicy $Sandbox "$HostIP`:$Port"
-            $PolicyDenied = ($P.Text -match '(?i)Denied')
+        $P = Check-NetworkPolicy $Sandbox "localhost:$Port"
+        $PolicyDenied = ($P.Text -match '(?i)Denied')
 
-            # telnet:// makes curl perform a raw TCP connection rather than an HTTP
-            # request. Success is determined by whether the Windows listener accepts,
-            # not by curl's exit code or a synthetic proxy response.
-            $null = Run-Sbx $Sandbox @("sh", "-lc", "curl --noproxy '*' -sS --connect-timeout 2 --max-time 3 telnet://$HostIP`:$Port </dev/null >/dev/null 2>&1")
-            Start-Sleep -Milliseconds 250
+        $null = Run-Sbx $Sandbox @("sh", "-lc", "curl --noproxy '*' -sS --connect-timeout 2 --max-time 3 telnet://host.docker.internal:$Port </dev/null >/dev/null 2>&1")
+        Start-Sleep -Milliseconds 250
 
-            $Accepted = $AcceptTask.IsCompleted
-            if ($Accepted) {
-                try { $Client = $AcceptTask.Result } catch { $Client = $null }
-                $ReachedHost += "$HostIP`:$Port"
-            }
-            $HostProbeDetails += "$HostIP`:$Port policy=$(if ($PolicyDenied) {'DENY'} else {'NOT-DENY'}) accepted=$Accepted"
+        $Accepted = $AcceptTask.IsCompleted
+        if ($Accepted) {
+            try { $Client = $AcceptTask.Result } catch { $Client = $null }
         }
-        catch {
-            $HostProbeDetails += "$HostIP listener-error=$($_.Exception.Message)"
-        }
-        finally {
-            if ($null -ne $Client) { $Client.Dispose() }
-            if ($null -ne $Listener) { $Listener.Stop() }
-        }
+        $HostSafe = ($PolicyDenied -and (-not $Accepted))
+        Add-Check "Unapproved host service unreachable" $HostSafe "localhost:$Port policy=$(if ($PolicyDenied) {'DENY'} else {'NOT-DENY'}) accepted=$Accepted"
     }
-
-    if ($HostIPs.Count -eq 0) {
-        Add-Check "Windows host private interfaces unreachable" $false "nessun IPv4 privato host rilevato; test non eseguito"
-    }
-    else {
-        Add-Check "Windows host private interfaces unreachable" ($ReachedHost.Count -eq 0) $(if ($ReachedHost.Count -eq 0) { $HostProbeDetails -join "; " } else { "HOST TCP REACHED: " + ($ReachedHost -join ", ") })
+    finally {
+        if ($null -ne $Client) { $Client.Dispose() }
+        if ($null -ne $Listener) { $Listener.Stop() }
     }
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "touch /run/sandbox/source/OCBOX_MUST_NOT_WRITE 2>/dev/null")
