@@ -43,6 +43,20 @@ function Run-AgentShell($Sandbox, $Command) {
     }
 }
 
+function Check-NetworkPolicy($Sandbox, $Target) {
+    $Old = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $Out = @(& sbx policy check network --sandbox $Sandbox $Target 2>&1)
+        $Code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $Old }
+    [pscustomobject]@{
+        Code = $Code
+        Text = (($Out | ForEach-Object { "$($_)" }) -join "`n").Trim()
+    }
+}
+
 $Results = @()
 $Nonce = [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $Sandbox = "oc-security-$Nonce"
@@ -68,7 +82,6 @@ try {
     Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**") | Out-Null
 
-    # Full public web, but never RFC1918/CGNAT/link-local/IPv6-local space.
     $PrivateDeny = @(Get-PrivateNetworkDenyResources)
     Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $Sandbox, ($PrivateDeny -join ",")) | Out-Null
 
@@ -77,15 +90,30 @@ try {
     $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
     Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
 
+    # Verify both layers: policy evaluation must deny private ranges, and a client
+    # attempting to bypass HTTP(S)_PROXY must still fail through Docker's transparent
+    # proxy. curl -f is essential: HTTP 4xx policy responses must count as failures.
     $LanTargets = @("10.0.0.1", "172.16.0.1", "192.168.0.1", "192.168.1.1", "100.64.0.1", "169.254.169.254")
-    $ReachablePrivate = @()
+    $PolicyAllowed = @()
+    $RuntimeReachable = @()
     $LanDetails = @()
     foreach ($Target in $LanTargets) {
-        $R = Run-Sbx $Sandbox @("sh", "-lc", "curl --noproxy '*' -sS -o /dev/null --connect-timeout 2 --max-time 3 http://$Target/")
-        $LanDetails += "$Target=exit$($R.Code)"
-        if ($R.Code -eq 0) { $ReachablePrivate += $Target }
+        $P = Check-NetworkPolicy $Sandbox $Target
+        $PolicyDenied = ($P.Text -match '(?i)Denied')
+        if (-not $PolicyDenied) { $PolicyAllowed += $Target }
+
+        $R = Run-Sbx $Sandbox @("sh", "-lc", "curl --noproxy '*' -fsS -o /dev/null --connect-timeout 2 --max-time 3 http://$Target/")
+        if ($R.Code -eq 0) { $RuntimeReachable += $Target }
+        $LanDetails += "$Target policy=$(if ($PolicyDenied) {'DENY'} else {'NOT-DENY'}) curl=exit$($R.Code)"
     }
-    Add-Check "Direct private/LAN bypass blocked" ($ReachablePrivate.Count -eq 0) $(if ($ReachablePrivate.Count -gt 0) { "DIRECT REACHABLE: " + ($ReachablePrivate -join ", ") } else { $LanDetails -join "; " })
+    $LanSafe = (($PolicyAllowed.Count -eq 0) -and ($RuntimeReachable.Count -eq 0))
+    $LanDetail = if ($LanSafe) {
+        $LanDetails -join "; "
+    }
+    else {
+        "policy-not-denied=[" + ($PolicyAllowed -join ",") + "]; runtime-success=[" + ($RuntimeReachable -join ",") + "]"
+    }
+    Add-Check "Private/LAN egress denied" $LanSafe $LanDetail
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "touch /run/sandbox/source/OCBOX_MUST_NOT_WRITE 2>/dev/null")
     Add-Check "Host repository source read-only" ($R.Code -ne 0) "write exit=$($R.Code)"
