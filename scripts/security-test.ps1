@@ -72,10 +72,6 @@ function Test-HostHttpCanary($Sandbox, [bool]$ExplicitlyAllow) {
         $P = Check-NetworkPolicy $Sandbox "localhost:$Port"
         $AcceptTask = $Listener.AcceptTcpClientAsync()
 
-        # Exercise the real host-service path documented by Docker Sandboxes:
-        # HTTP to host.docker.internal, which the host proxy rewrites to localhost.
-        # Whether curl ultimately times out is irrelevant; if the host listener
-        # accepts a socket, the sandbox reached that host service.
         $null = Run-Sbx $Sandbox @("sh", "-lc", "curl -sS --connect-timeout 2 --max-time 3 http://host.docker.internal:$Port/ -o /dev/null 2>/dev/null")
         Start-Sleep -Milliseconds 250
 
@@ -119,12 +115,28 @@ try {
 
     Write-Host "Creo microVM usa-e-getta: $Sandbox" -ForegroundColor Cyan
     Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
-    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**") | Out-Null
+
+    # Candidate for unrestricted PUBLIC web: unlike **, this should require a
+    # dotted hostname and therefore must not match the rewritten single-label
+    # host name localhost. We validate that assumption below before using it in
+    # the real work profile.
+    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**.*") | Out-Null
 
     $PrivateDeny = @(Get-PrivateNetworkDenyResources)
     Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $Sandbox, ($PrivateDeny -join ",")) | Out-Null
 
     Write-Host "Raccolgo evidenze dall'interno della microVM..." -ForegroundColor DarkGray
+
+    $PublicTargets = @("example.com:443", "api.github.com:443", "registry.npmjs.org:443")
+    $PublicMisses = @()
+    $PublicDetails = @()
+    foreach ($Target in $PublicTargets) {
+        $P = Check-NetworkPolicy $Sandbox $Target
+        $Allowed = ($P.Text -match '(?i)Allowed')
+        if (-not $Allowed) { $PublicMisses += $Target }
+        $PublicDetails += "$Target=$(if ($Allowed) {'ALLOW'} else {'NOT-ALLOW'})"
+    }
+    Add-Check "Public FQDN wildcard policy" ($PublicMisses.Count -eq 0) $(if ($PublicMisses.Count -eq 0) { $PublicDetails -join "; " } else { "NOT ALLOWED: " + ($PublicMisses -join ", ") })
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
     Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
@@ -140,15 +152,13 @@ try {
     }
     Add-Check "Private CIDR policy denies" ($PolicyMisses.Count -eq 0) $(if ($PolicyMisses.Count -eq 0) { $PolicyDetails -join "; " } else { "NOT DENIED: " + ($PolicyMisses -join ", ") })
 
-    # Negative host-service test: full public-web wildcard must not implicitly grant
-    # access to arbitrary Windows localhost services through host.docker.internal.
     $HostNegative = Test-HostHttpCanary $Sandbox $false
-    Add-Check "Unapproved host HTTP service unreachable" (-not $HostNegative.Accepted) "localhost:$($HostNegative.Port) policy=$($HostNegative.Policy) accepted=$($HostNegative.Accepted)"
+    $HostNegativePolicyDenied = ($HostNegative.Policy -match '(?i)Denied')
+    Add-Check "Unapproved host HTTP service unreachable" (($HostNegativePolicyDenied) -and (-not $HostNegative.Accepted)) "localhost:$($HostNegative.Port) policy=$($HostNegative.Policy) accepted=$($HostNegative.Accepted)"
 
-    # Positive control: prove the canary/path is valid by explicitly allowing a
-    # different localhost port. If this fails, the negative test is inconclusive.
     $HostPositive = Test-HostHttpCanary $Sandbox $true
-    Add-Check "Explicit host HTTP exception works" $HostPositive.Accepted "localhost:$($HostPositive.Port) policy=$($HostPositive.Policy) accepted=$($HostPositive.Accepted)"
+    $HostPositivePolicyAllowed = ($HostPositive.Policy -match '(?i)Allowed')
+    Add-Check "Explicit host HTTP exception works" (($HostPositivePolicyAllowed) -and $HostPositive.Accepted) "localhost:$($HostPositive.Port) policy=$($HostPositive.Policy) accepted=$($HostPositive.Accepted)"
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "touch /run/sandbox/source/OCBOX_MUST_NOT_WRITE 2>/dev/null")
     Add-Check "Host repository source read-only" ($R.Code -ne 0) "write exit=$($R.Code)"
