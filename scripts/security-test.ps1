@@ -116,18 +116,18 @@ try {
     Write-Host "Creo microVM usa-e-getta: $Sandbox" -ForegroundColor Cyan
     Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
 
-    # Candidate for unrestricted PUBLIC web: unlike **, this should require a
-    # dotted hostname and therefore must not match the rewritten single-label
-    # host name localhost. We validate that assumption below before using it in
-    # the real work profile.
-    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**.*") | Out-Null
+    # Strong public-web candidate: allow arbitrary destinations only on the two
+    # standard web ports. This still covers normal browser/package-manager/HTTPS
+    # traffic without implicitly granting arbitrary localhost ports.
+    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**:80,**:443") | Out-Null
 
     $PrivateDeny = @(Get-PrivateNetworkDenyResources)
-    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $Sandbox, ($PrivateDeny -join ",")) | Out-Null
+    $HostWebDeny = @("localhost:80", "localhost:443")
+    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $Sandbox, (($PrivateDeny + $HostWebDeny) -join ",")) | Out-Null
 
     Write-Host "Raccolgo evidenze dall'interno della microVM..." -ForegroundColor DarkGray
 
-    $PublicTargets = @("example.com:443", "api.github.com:443", "registry.npmjs.org:443")
+    $PublicTargets = @("example.com:80", "example.com:443", "api.github.com:443", "registry.npmjs.org:443")
     $PublicMisses = @()
     $PublicDetails = @()
     foreach ($Target in $PublicTargets) {
@@ -136,7 +136,7 @@ try {
         if (-not $Allowed) { $PublicMisses += $Target }
         $PublicDetails += "$Target=$(if ($Allowed) {'ALLOW'} else {'NOT-ALLOW'})"
     }
-    Add-Check "Public FQDN wildcard policy" ($PublicMisses.Count -eq 0) $(if ($PublicMisses.Count -eq 0) { $PublicDetails -join "; " } else { "NOT ALLOWED: " + ($PublicMisses -join ", ") })
+    Add-Check "Public web 80/443 policy" ($PublicMisses.Count -eq 0) $(if ($PublicMisses.Count -eq 0) { $PublicDetails -join "; " } else { "NOT ALLOWED: " + ($PublicMisses -join ", ") })
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
     Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
@@ -151,6 +151,17 @@ try {
         $PolicyDetails += "$Target=$(if ($Denied) {'DENY'} else {'NOT-DENY'})"
     }
     Add-Check "Private CIDR policy denies" ($PolicyMisses.Count -eq 0) $(if ($PolicyMisses.Count -eq 0) { $PolicyDetails -join "; " } else { "NOT DENIED: " + ($PolicyMisses -join ", ") })
+
+    $HostWebTargets = @("localhost:80", "localhost:443")
+    $HostWebMisses = @()
+    $HostWebDetails = @()
+    foreach ($Target in $HostWebTargets) {
+        $P = Check-NetworkPolicy $Sandbox $Target
+        $Denied = ($P.Text -match '(?i)Denied')
+        if (-not $Denied) { $HostWebMisses += $Target }
+        $HostWebDetails += "$Target=$(if ($Denied) {'DENY'} else {'NOT-DENY'})"
+    }
+    Add-Check "Host web ports explicitly denied" ($HostWebMisses.Count -eq 0) $(if ($HostWebMisses.Count -eq 0) { $HostWebDetails -join "; " } else { "NOT DENIED: " + ($HostWebMisses -join ", ") })
 
     $HostNegative = Test-HostHttpCanary $Sandbox $false
     $HostNegativePolicyDenied = ($HostNegative.Policy -match '(?i)Denied')
