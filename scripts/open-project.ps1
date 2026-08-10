@@ -10,6 +10,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "private\Common.ps1")
+. (Join-Path $PSScriptRoot "private\GitHandoff.ps1")
 
 $Config = Get-ToolConfig
 Assert-Command "sbx"
@@ -72,7 +73,7 @@ try {
         Write-Host "Sandbox esistente: $SandboxName" -ForegroundColor Yellow
     }
 
-    Write-Host "Applico full-web, endpoint llama isolato e configurazione OpenCode no-approval..." -ForegroundColor Cyan
+    Write-Host "Applico public-web 80/443, endpoint llama isolato e configurazione OpenCode no-approval..." -ForegroundColor Cyan
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
 
     Write-Host ""
@@ -82,9 +83,15 @@ try {
         Write-Host "Modalita: CLONE - repo host read-only; modifiche nella copia privata." -ForegroundColor Green
     }
     if ($Config.AllowFullWeb) {
-        Write-Host "Rete: Internet HTTP/HTTPS completo; host/LAN/private ranges restano isolati da Docker." -ForegroundColor Green
+        Write-Host "Rete: HTTP/HTTPS pubblico su 80/443; LAN/private e servizi host non autorizzati bloccati." -ForegroundColor Green
     }
     Write-Host "OpenCode: nessun approval prompt dentro la microVM." -ForegroundColor Green
+    if ($Config.DestroyWorkSandboxOnExit) {
+        Write-Host "Lifecycle: snapshot Git -> fetch passivo -> verifica -> distruzione microVM." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Lifecycle: sandbox mantenuta dopo l'uscita finche il nuovo handoff non viene validato." -ForegroundColor Yellow
+    }
     Write-Host ""
 
     if (-not $NoAttach) {
@@ -93,10 +100,30 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "OpenCode/sbx terminato con exit code $LASTEXITCODE."
         }
-    }
 
-    if ($Config.DestroyWorkSandboxOnExit) {
-        Write-Warning "Distruzione automatica richiesta, ma prima va completato il workflow Git di handoff sicuro."
+        if ($Config.DestroyWorkSandboxOnExit) {
+            if (-not $Config.UseCloneMode) {
+                throw "Distruzione automatica richiede clone mode. Sandbox conservata."
+            }
+
+            $SessionId = Get-HandoffSessionId
+            Write-Host "Preservo il lavoro prima di distruggere la microVM..." -ForegroundColor Cyan
+            $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
+
+            if ($Snapshot.IgnoredCount -gt 0) {
+                Write-Warning "Trovati $($Snapshot.IgnoredCount) file ignored/untracked nel clone. Il Git handoff non li include: sandbox conservata per evitare perdita dati."
+            }
+            else {
+                $Handoff = Export-SandboxGitHandoff -ProjectPath $ProjectPath -SandboxName $SandboxName -SessionId $SessionId -Snapshot $Snapshot
+                Write-Host "Snapshot verificato sul host: $($Handoff.SnapshotRef)" -ForegroundColor Green
+                Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
+
+                Remove-SandboxAfterHandoff -SandboxName $SandboxName -ProjectPath $ProjectPath -Handoff $Handoff
+                Write-Host "MicroVM distrutta. Il working tree host non e stato modificato." -ForegroundColor Green
+                Write-Host "Per ispezionare: git show $($Handoff.SnapshotRef)" -ForegroundColor Cyan
+                Write-Host "Per confrontare: git diff HEAD..$($Handoff.SnapshotRef)" -ForegroundColor Cyan
+            }
+        }
     }
 }
 finally {
