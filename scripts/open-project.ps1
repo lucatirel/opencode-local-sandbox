@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "private\Common.ps1")
 . (Join-Path $PSScriptRoot "private\GitHandoff.ps1")
 
+$CallerLocation = (Get-Location).Path
 $Config = Get-ToolConfig
 Assert-Command "sbx"
 
@@ -87,10 +88,10 @@ try {
     }
     Write-Host "OpenCode: nessun approval prompt dentro la microVM." -ForegroundColor Green
     if ($Config.DestroyWorkSandboxOnExit) {
-        Write-Host "Lifecycle: snapshot Git -> fetch passivo -> verifica -> distruzione microVM." -ForegroundColor Green
+        Write-Host "Lifecycle: snapshot Git -> bundle verificato -> refs/ocbox/* -> distruzione microVM." -ForegroundColor Green
     }
     else {
-        Write-Host "Lifecycle: sandbox mantenuta dopo l'uscita finche il nuovo handoff non viene validato." -ForegroundColor Yellow
+        Write-Host "Lifecycle: sandbox mantenuta dopo l'uscita." -ForegroundColor Yellow
     }
     Write-Host ""
 
@@ -106,6 +107,11 @@ try {
                 throw "Distruzione automatica richiede clone mode. Sandbox conservata."
             }
 
+            $HostHeadBeforeHandoff = (& git -C $ProjectPath rev-parse HEAD).Trim().ToLowerInvariant()
+            if ($LASTEXITCODE -ne 0) {
+                throw "Impossibile leggere HEAD host prima dell'handoff. Sandbox conservata."
+            }
+
             $SessionId = Get-HandoffSessionId
             Write-Host "Preservo il lavoro prima di distruggere la microVM..." -ForegroundColor Cyan
             $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
@@ -115,18 +121,31 @@ try {
             }
             else {
                 $Handoff = Export-SandboxGitHandoff -ProjectPath $ProjectPath -SandboxName $SandboxName -SessionId $SessionId -Snapshot $Snapshot
-                Write-Host "Snapshot verificato sul host: $($Handoff.SnapshotRef)" -ForegroundColor Green
-                Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
+                $HasChanges = ($Handoff.SnapshotSha -ne $HostHeadBeforeHandoff)
+
+                if ($HasChanges) {
+                    Write-Host "Snapshot con modifiche verificato sul host: $($Handoff.SnapshotRef)" -ForegroundColor Green
+                    Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
+                }
+                else {
+                    Write-Host "Nessuna modifica prodotta dall'agente in questa sessione." -ForegroundColor Yellow
+                    Write-Host "Snapshot verificato: $($Handoff.SnapshotRef)" -ForegroundColor DarkGray
+                }
 
                 Remove-SandboxAfterHandoff -SandboxName $SandboxName -ProjectPath $ProjectPath -Handoff $Handoff
                 Write-Host "MicroVM distrutta. Il working tree host non e stato modificato." -ForegroundColor Green
-                Write-Host "Per ispezionare: git show $($Handoff.SnapshotRef)" -ForegroundColor Cyan
-                Write-Host "Per confrontare: git diff HEAD..$($Handoff.SnapshotRef)" -ForegroundColor Cyan
+                if ($HasChanges) {
+                    Write-Host "Review sicura: .\sandbox.ps1 review `"$ProjectPath`"" -ForegroundColor Cyan
+                }
             }
         }
     }
 }
 finally {
+    if (Test-Path -LiteralPath $CallerLocation -PathType Container) {
+        Set-Location -LiteralPath $CallerLocation
+    }
+
     if ($Config.DisableSshAgentForwarding -and $null -ne $SavedSshAuthSock) {
         $env:SSH_AUTH_SOCK = $SavedSshAuthSock
     }
