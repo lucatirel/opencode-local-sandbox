@@ -11,3 +11,42 @@ $SandboxMemory = "6g"
 $SandboxCpus = 6
 
 # Hardened agent profile.
+# The agent gets full privileges and unrestricted HTTP/HTTPS inside the microVM,
+# while the host repository is exposed read-only and work happens in a private clone.
+$UseCloneMode = $true
+$AllowFullWeb = $true
+$DisableSharedSkills = $true
+$DisableSshAgentForwarding = $true
+
+# Verified lifecycle: after OpenCode exits normally, snapshot the private clone,
+# fetch it into passive refs/ocbox/* refs on the host, verify host HEAD/status are
+# unchanged, and only then destroy the work sandbox. Any preservation failure keeps
+# the sandbox alive instead of risking data loss.
+$DestroyWorkSandboxOnExit = $true
+
+$LlamaPort = 8080
+$ContextSize = 16384
+$OutputTokens = 2048
+$ServerStartupTimeoutSeconds = 120
+
+# Tuned preset for RTX 4070 Laptop 8 GB + 16 GB system RAM.
+$LoadMode = "mmap"
+$CpuMoeLayers = 26
+$GpuLayers = "all"
+$Fit = "off"
+$KvCacheType = "q4_0"
+$BatchSize = 2048
+$UBatchSize = 512
+$CacheRamMiB = 0
+$Parallel = 1
+
+# OpenCode / generation defaults.
+$Temperature = 0.6
+$TopK = 20
+$TopP = 0.95
+$MinP = 0
+$DisableThinking = $true
+
+# Used only when $AllowFullWeb is $false. The local llama endpoint is always
+# allowed automatically.
+$AdditionalNetworkHosts = @()
