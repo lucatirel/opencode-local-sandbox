@@ -34,7 +34,7 @@ function Get-ToolConfig {
         DisableSharedSkills         = [bool]$DisableSharedSkills
         DisableSshAgentForwarding   = [bool]$DisableSshAgentForwarding
         DestroyWorkSandboxOnExit    = [bool]$DestroyWorkSandboxOnExit
-        LlamaPort                   = $LlamaPort
+        LlamaPort                   = [int]$LlamaPort
         ContextSize                 = $ContextSize
         OutputTokens                = $OutputTokens
         ServerStartupTimeoutSeconds = $ServerStartupTimeoutSeconds
@@ -92,9 +92,38 @@ function Assert-GitRepository {
     param([Parameter(Mandatory = $true)][string]$ProjectPath)
 
     Assert-Command "git"
-    & git -C $ProjectPath rev-parse --show-toplevel 1>$null 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Il profilo hardened usa clone mode e richiede un repository Git. Inizializza Git nel progetto prima di aprirlo."
+
+    $Previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $RootOutput = @(& git -C $ProjectPath rev-parse --show-toplevel 2>$null)
+        $Code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $Previous
+    }
+
+    if ($Code -ne 0 -or $RootOutput.Count -eq 0) {
+        throw "Il profilo hardened usa clone mode e richiede un repository Git con almeno un commit."
+    }
+
+    $RepoRoot = (Resolve-Path -LiteralPath ("$($RootOutput[-1])".Trim())).Path
+    $Requested = (Resolve-Path -LiteralPath $ProjectPath).Path
+    if (-not [string]::Equals($RepoRoot.TrimEnd('\'), $Requested.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Apri la root del repository Git, non una sottocartella. Root rilevata: $RepoRoot"
+    }
+
+    $Previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & git -C $ProjectPath rev-parse --verify HEAD 1>$null 2>$null
+        $HeadCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $Previous
+    }
+    if ($HeadCode -ne 0) {
+        throw "Clone mode richiede almeno un commit Git. Crea un commit iniziale oppure usa .\sandbox.ps1 new <nome>."
     }
 }
 
@@ -145,8 +174,6 @@ function Get-SandboxNames {
 }
 
 function Get-PrivateNetworkDenyResources {
-    # Explicit egress guardrails for LAN/VPN/overlay/link-local space. These
-    # deny rules remain in force even when public HTTP/HTTPS is broadly allowed.
     return @(
         "10.0.0.0/8",
         "100.64.0.0/10",
@@ -173,10 +200,6 @@ function Write-GeneratedOpenCodeConfig {
         }
     }
 
-    # The microVM is the trust boundary. Inside it the agent is intentionally
-    # autonomous: edits, shell commands, installs, and tool use require no prompts.
-    $Permissions = [ordered]@{ "*" = "allow" }
-
     $Document = [ordered]@{
         '$schema' = "https://opencode.ai/config.json"
         enabled_providers = @("agentbox-llama")
@@ -192,7 +215,7 @@ function Write-GeneratedOpenCodeConfig {
             }
         }
         model = "agentbox-llama/$($Config.ModelAlias)"
-        permission = $Permissions
+        permission = [ordered]@{ "*" = "allow" }
         agent = [ordered]@{
             title = [ordered]@{ disable = $true }
         }
@@ -216,15 +239,18 @@ function Install-SandboxConfiguration {
 
     Assert-Command "sbx"
 
-    # The only intentional host-service exception. Docker rewrites
-    # host.docker.internal to localhost before policy evaluation.
+    if ([int]$Config.LlamaPort -in @(80, 443)) {
+        throw "LlamaPort non puo essere 80 o 443 nel profilo hardened: quelle porte localhost sono negate esplicitamente. Usa ad esempio 8080."
+    }
+
+    # Docker's sandbox proxy evaluates host.docker.internal as host localhost.
+    # This is the only intentional host-service exception.
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "localhost:$($Config.LlamaPort)") | Out-Null
 
     if ($Config.AllowFullWeb) {
-        # Broad PUBLIC web access without `allow **`, which also opened arbitrary
-        # Windows localhost services through host.docker.internal in testing.
-        # Standard HTTP/HTTPS on any destination remains available; non-web ports
-        # stay default-deny unless explicitly listed below.
+        # Historical setting name: this is broad PUBLIC HTTP/HTTPS (80/443), not
+        # arbitrary outbound ports. `allow **` is intentionally never used because
+        # it also exposed arbitrary host localhost services in empirical tests.
         Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "**:80,**:443") | Out-Null
     }
     elseif ($Config.AdditionalNetworkHosts.Count -gt 0) {
@@ -234,10 +260,6 @@ function Install-SandboxConfiguration {
         }
     }
 
-    # Defense in depth. Private/link-local space is always denied. Because the
-    # public-web rules also syntactically match localhost:80/443, deny those host
-    # ports explicitly. All other localhost ports remain default-deny; only the
-    # model port above is deliberately allowed.
     $NetworkDeny = @((Get-PrivateNetworkDenyResources) + @("localhost:80", "localhost:443"))
     Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $SandboxName, ($NetworkDeny -join ",")) | Out-Null
 
