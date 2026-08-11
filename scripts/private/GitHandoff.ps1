@@ -41,12 +41,18 @@ function New-SandboxGitSnapshot {
     $SnapshotBranch = "ocbox-snapshot-$SessionId"
     $Message = "ocbox snapshot $SessionId"
     $IgnoredList = "/tmp/ocbox-ignored-$SessionId.txt"
+    $SubmoduleStatus = "/tmp/ocbox-submodule-status-$SessionId.txt"
+    $SubmoduleHeads = "/tmp/ocbox-submodule-heads-$SessionId.txt"
 
     # Conservative preservation gate. These cases need dedicated transport logic:
     # - ignored files are outside ordinary Git history;
     # - multiple worktrees can contain independent uncommitted state;
     # - Git LFS objects are not embedded in a normal Git bundle;
-    # - dirty submodules contain nested repository state not captured by the parent.
+    # - dirty/diverged submodules contain nested repository state not captured by
+    #   the parent repository bundle.
+    #
+    # Keep this shell deliberately simple. It crosses PowerShell -> sbx -> bash, so
+    # avoid nested shell command strings/substitutions where a temp file is enough.
     $GuardCommand = @"
 set -eu
 git rev-parse --is-inside-work-tree >/dev/null
@@ -63,8 +69,21 @@ if command -v git-lfs >/dev/null 2>&1 || git lfs version >/dev/null 2>&1; then
   fi
 fi
 if [ -f .gitmodules ]; then
-  if ! git submodule foreach --quiet --recursive 'git diff --quiet && git diff --cached --quiet && test -z "`$(git ls-files --others --exclude-standard)"'; then
+  rm -f '$SubmoduleStatus' '$SubmoduleHeads'
+  if ! git submodule foreach --quiet --recursive git status --porcelain=v1 --untracked-files=normal > '$SubmoduleStatus' 2>&1; then
     printf '%s\n' 'OCBOX_DIRTY_SUBMODULE'
+    cat '$SubmoduleStatus'
+    exit 45
+  fi
+  if [ -s '$SubmoduleStatus' ]; then
+    printf '%s\n' 'OCBOX_DIRTY_SUBMODULE'
+    cat '$SubmoduleStatus'
+    exit 45
+  fi
+  git submodule status --recursive > '$SubmoduleHeads' 2>/dev/null || true
+  if grep -Eq "^[+U]" '$SubmoduleHeads'; then
+    printf '%s\n' 'OCBOX_DIRTY_SUBMODULE'
+    cat '$SubmoduleHeads'
     exit 45
   fi
 fi
@@ -80,8 +99,8 @@ fi
     switch ($Guard.Code) {
         42 { throw "La sandbox contiene file gitignored non preservabili automaticamente. Sandbox conservata. Output: $($Guard.Text)" }
         43 { throw "La sandbox contiene worktree Git secondari. Handoff automatico non sicuro: sandbox conservata. Output: $($Guard.Text)" }
-        44 { throw "Il repository usa Git LFS. Un Git bundle non preserva gli oggetti LFS: sandbox conservata. Implementare/usarе handoff LFS prima della distruzione." }
-        45 { throw "Sono presenti modifiche non committate dentro un submodule. Sandbox conservata per evitare perdita dati." }
+        44 { throw "Il repository usa Git LFS. Un Git bundle non preserva gli oggetti LFS: sandbox conservata. Implementare/usare handoff LFS prima della distruzione." }
+        45 { throw "Sono presenti modifiche o commit divergenti dentro un submodule. Sandbox conservata per evitare perdita dati. Output: $($Guard.Text)" }
     }
     if ($Guard.Code -ne 0) {
         throw "Controlli pre-handoff Git falliti (exit $($Guard.Code)). Sandbox conservata. Output: $($Guard.Text)"
