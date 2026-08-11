@@ -14,7 +14,7 @@ function Add-Check {
     })
 }
 
-foreach ($Command in @("git", "sbx", "mkcert")) {
+foreach ($Command in @("git", "sbx")) {
     $Found = Get-Command $Command -ErrorAction SilentlyContinue
     Add-Check -Name "Comando $Command" -Ok ($null -ne $Found) -Detail $(if ($Found) { $Found.Source } else { "non trovato" })
 }
@@ -31,16 +31,17 @@ catch {
 if ($Config) {
     $Server = Join-Path $Config.LlamaRoot "build\bin\Release\llama-server.exe"
     $Model = Join-Path $Config.LlamaRoot "models\$($Config.ModelFile)"
-    $Certificate = Join-Path $Config.LlamaRoot "certs\localhost-cert.pem"
-    $PrivateKey = Join-Path $Config.LlamaRoot "certs\localhost-key.pem"
 
     Add-Check -Name "llama-server.exe" -Ok (Test-Path -LiteralPath $Server -PathType Leaf) -Detail $Server
     Add-Check -Name "Modello GGUF" -Ok (Test-Path -LiteralPath $Model -PathType Leaf) -Detail $Model
-    Add-Check -Name "Certificato HTTPS" -Ok (Test-Path -LiteralPath $Certificate -PathType Leaf) -Detail $Certificate
-    Add-Check -Name "Chiave HTTPS" -Ok (Test-Path -LiteralPath $PrivateKey -PathType Leaf) -Detail $PrivateKey
+    Add-Check -Name "LlamaPort hardened" -Ok ([int]$Config.LlamaPort -notin @(80, 443)) -Detail "porta=$($Config.LlamaPort)"
+    Add-Check -Name "Clone mode" -Ok ([bool]$Config.UseCloneMode) -Detail "UseCloneMode=$($Config.UseCloneMode)"
+    Add-Check -Name "Shared skills disabilitate" -Ok ([bool]$Config.DisableSharedSkills) -Detail "DisableSharedSkills=$($Config.DisableSharedSkills)"
+    Add-Check -Name "SSH agent forwarding disabilitato" -Ok ([bool]$Config.DisableSshAgentForwarding) -Detail "DisableSshAgentForwarding=$($Config.DisableSshAgentForwarding)"
+    Add-Check -Name "Disposable lifecycle" -Ok ([bool]$Config.DestroyWorkSandboxOnExit) -Detail "DestroyWorkSandboxOnExit=$($Config.DestroyWorkSandboxOnExit)"
 
     $ApiReady = Test-LlamaApi -Port ([int]$Config.LlamaPort)
-    Add-Check -Name "API llama.cpp" -Ok $ApiReady -Detail $(if ($ApiReady) { "https://localhost:$($Config.LlamaPort)/v1" } else { "server non avviato o non raggiungibile" })
+    Add-Check -Name "API llama.cpp" -Ok $ApiReady -Detail $(if ($ApiReady) { "http://127.0.0.1:$($Config.LlamaPort)/v1" } else { "server non avviato o non raggiungibile" })
 }
 
 Write-Host ""
@@ -57,4 +58,3 @@ if ($Config -and -not (Test-LlamaApi -Port ([int]$Config.LlamaPort))) {
 else {
     Write-Host "Doctor completato senza errori." -ForegroundColor Green
 }
-
