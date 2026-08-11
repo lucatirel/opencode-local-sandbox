@@ -1,322 +1,296 @@
-# OpenCode Local Sandbox Template
+# OCBox — OpenCode Local Sandbox
 
-Template Windows per usare un modello locale servito da `llama.cpp` con OpenCode confinato in una Docker Sandbox distinta per ogni progetto.
+> **Give your local coding agent freedom. Treat it like it's hostile.**
 
-Questa repository contiene il **tooling**, non i progetti e non le dipendenze pesanti. `llama.cpp`, i modelli GGUF, i certificati privati e le cartelle di lavoro rimangono fuori da Git.
+OCBox is a Windows-first harness for running **OpenCode + a local llama.cpp model** inside a disposable Docker Sandbox microVM.
 
-## Risultato finale
-
-Una volta configurato il PC:
-
-```powershell
-.\sandbox.ps1 new "mia-app"
-```
-
-crea automaticamente una cartella Git sotto `Projects`, crea una sandbox dedicata, avvia `llama-server` se necessario, installa CA e configurazione OpenCode nella sandbox e apre OpenCode.
-
-Per un progetto gia esistente:
-
-```powershell
-.\sandbox.ps1 open "C:\Projects\progetto-esistente"
-```
-
-La repository del template resta separata:
+The agent gets broad freedom *inside* the sandbox: shell, installs, sudo, package managers, its own Docker Engine, public HTTP/HTTPS, and no approval prompts. The Windows host is treated as the asset to protect.
 
 ```text
-C:\AI\llama.cpp\                       programma, modelli e certificati
-C:\AI\opencode-local-sandbox\          questa repository
-C:\Users\nome\Projects\mia-app\       progetto Git e workspace sandbox
-C:\Users\nome\Projects\altra-app\     altro progetto, altra sandbox
+Windows host
+├── llama.cpp  ─────────────── 127.0.0.1:8080 only
+├── your Git repo ──────────── host working tree stays untouched
+│
+└── Docker Sandbox microVM
+    ├── private Git clone
+    ├── OpenCode: full autonomy
+    ├── public web: 80/443
+    ├── LAN/private ranges: denied
+    ├── host services: denied except llama port
+    └── disposable lifecycle
+            ↓
+       Git snapshot
+            ↓
+       verified Git bundle
+            ↓
+       refs/ocbox/* on host
+            ↓
+       microVM destroyed
 ```
 
-Non bisogna creare progetti dentro `opencode-local-sandbox` e non bisogna copiare il template dentro i progetti.
+The result comes back as **passive Git objects**, not as an automatic checkout or merge.
 
-## Architettura e isolamento
+## The 20-second version
 
-- `llama-server` gira sull'host Windows e ascolta soltanto su `127.0.0.1`.
-- La sandbox raggiunge il server tramite `host.docker.internal` e HTTPS.
-- La CA di sviluppo non viene resa attendibile globalmente da Windows: viene installata soltanto dentro ogni sandbox.
-- Ogni progetto riceve una sandbox con nome stabile derivato da nome e percorso.
-- Soltanto la cartella del progetto viene montata in scrittura.
-- OpenCode, pacchetti installati e Docker Engine della sandbox rimangono nella microVM.
-- La configurazione OpenCode viene generata e installata dentro la sandbox; non viene copiata nel progetto.
-- La regola per `localhost:8080` e limitata alla singola sandbox tramite `--sandbox`.
-- Modelli, chiavi, certificati e percorsi locali non vengono committati.
+Once configured:
 
-La sandbox protegge il resto del PC, ma OpenCode puo modificare o cancellare file non committati dentro il progetto. Fai commit frequenti.
+```powershell
+.\sandbox.ps1 open "C:\code\my-project"
+```
 
-## Requisiti del nuovo PC
+Work with OpenCode normally. When you exit OpenCode successfully, OCBox:
 
-Prima del bootstrap devono esistere:
+1. snapshots the private clone inside the microVM;
+2. creates a Git bundle inside the sandbox;
+3. copies and verifies the bundle on the host;
+4. imports it under `refs/ocbox/...`;
+5. verifies host `HEAD` and working-tree status did not change;
+6. destroys the microVM.
 
-- Windows e PowerShell;
+Review the result without checking it out:
+
+```powershell
+.\sandbox.ps1 review "C:\code\my-project"
+```
+
+That is the core workflow.
+
+## Why this exists
+
+Coding agents are most useful when they can actually act: run commands, install dependencies, test things, create files, use tools and iterate without waiting for approval every 30 seconds.
+
+That is also exactly what makes an agent dangerous if it consumes malicious instructions or malicious dependencies.
+
+OCBox moves the trust boundary outward:
+
+- **inside the sandbox:** assume compromise is acceptable;
+- **outside the sandbox:** make host access explicit, narrow and testable.
+
+The project is intentionally built around executable security checks rather than a "trust the setup" claim.
+
+## Security posture
+
+The hardened default profile uses:
+
+- Docker Sandboxes clone mode;
+- `--no-share-skills`;
+- no SSH agent forwarding;
+- no host Docker socket;
+- no intentionally published sandbox ports;
+- OpenCode `permission: { "*": "allow" }` inside the microVM;
+- llama.cpp bound to host `127.0.0.1` only;
+- one explicit host exception: `localhost:<llama-port>`;
+- public HTTP/HTTPS wildcard access on ports 80/443;
+- explicit denies for localhost 80/443;
+- explicit denies for common LAN, VPN/overlay and link-local ranges;
+- default deny for other network destinations/ports;
+- disposable microVMs after verified Git handoff.
+
+### Why not `allow **`?
+
+Because we tested it.
+
+An unrestricted Docker Sandbox network wildcard also made arbitrary Windows localhost HTTP services reachable through `host.docker.internal` in our environment. OCBox therefore never uses a bare `allow **` in the hardened profile.
+
+Run the isolation test yourself:
+
+```powershell
+.\sandbox.ps1 security-test
+```
+
+The test includes both negative and positive controls so a PASS is not simply "the test couldn't connect to anything".
+
+See [SECURITY.md](SECURITY.md) for the threat model, residual risks and the important source-exfiltration limitation.
+
+## Git handoff: untrusted code stays untrusted
+
+Agent output is treated like an untrusted pull request.
+
+A successful session lands at a ref such as:
+
+```text
+refs/ocbox/20260811-201336-f2271e34/snapshot
+```
+
+Your checked-out branch and working tree are not modified.
+
+Inspect the latest result:
+
+```powershell
+.\sandbox.ps1 review "C:\code\my-project"
+```
+
+Or use normal Git directly:
+
+```powershell
+git -C "C:\code\my-project" for-each-ref refs/ocbox/
+git -C "C:\code\my-project" diff HEAD..refs/ocbox/<session>/snapshot
+git -C "C:\code\my-project" show refs/ocbox/<session>/snapshot:path/to/file
+```
+
+If you want a local branch for deeper review **without checkout**:
+
+```powershell
+git -C "C:\code\my-project" branch ocbox-review refs/ocbox/<session>/snapshot
+```
+
+Review before executing or merging it.
+
+## Fail safe, not fail destructive
+
+If snapshot, bundle creation, copy, verification or import fails, OCBox does **not** destroy the sandbox.
+
+Recover a preserved sandbox later with:
+
+```powershell
+.\sandbox.ps1 handoff "C:\code\my-project"
+```
+
+Only a verified handoff is followed by `sbx rm`.
+
+Files ignored by Git are another deliberate stop condition: if the agent created ignored files that would be lost by `git add -A`, automatic destruction is refused.
+
+## Requirements
+
+Current target environment:
+
+- Windows + PowerShell;
 - Git;
-- `llama.cpp` compilato, preferibilmente con CUDA;
-- almeno un modello `.gguf` dentro `llama.cpp\models`.
-
-Il bootstrap puo installare tramite `winget` i due strumenti piccoli mancanti:
-
 - Docker Sandboxes CLI (`sbx`);
-- `mkcert`.
+- a working local `llama.cpp` build with `llama-server.exe`;
+- at least one GGUF model in `llama.cpp\models`.
 
-Non scarica modelli e non compila `llama.cpp`, perche percorso, GPU e modello sono scelte specifiche della macchina.
+OCBox does **not** download a model or build llama.cpp for you. Hardware/model choice is machine-specific.
 
-## Installazione da zero
+## Install
 
-Clona il template:
+Clone the repository:
 
 ```powershell
 git clone https://github.com/lucatirel/opencode-local-sandbox.git
-Set-Location .\opencode-local-sandbox
+cd opencode-local-sandbox
 Set-ExecutionPolicy -Scope Process Bypass
 ```
 
-Avvia il bootstrap:
+Bootstrap the machine:
 
 ```powershell
 .\sandbox.ps1 bootstrap
 ```
 
-Il bootstrap:
+The bootstrap can install the Docker Sandboxes CLI with `winget`, asks for your llama.cpp/model/project paths, creates an ignored `config.local.ps1`, and runs `doctor`.
 
-1. verifica Git, `sbx` e `mkcert`;
-2. propone di installare `sbx` o `mkcert` se mancano;
-3. rileva il percorso storico `Desktop\Git\llama.cpp` oppure lo chiede;
-4. rileva automaticamente il GGUF se ce n'e uno solo;
-5. chiede la cartella generale dei progetti;
-6. crea `config.local.ps1`, escluso da Git;
-7. effettua il login a Docker Sandboxes quando necessario;
-8. genera il certificato HTTPS senza installare una CA globale in Windows;
-9. installa la CA soltanto nelle sandbox quando vengono create o aperte;
-10. esegue il controllo `doctor`.
-
-Su una nuova installazione di `sbx`, per la rete scegli **Locked Down** se vuoi il profilo piu restrittivo. Le regole aggiunte da questo template sono specifiche della singola sandbox. Un'eventuale policy globale gia esistente continua comunque ad applicarsi.
-
-## Uso quotidiano
-
-### Nuovo progetto
+Then verify the security boundary on your machine:
 
 ```powershell
-Set-Location C:\AI\opencode-local-sandbox
-.\sandbox.ps1 new "nome-progetto"
+.\sandbox.ps1 security-test
+.\sandbox.ps1 handoff-test
 ```
 
-Il progetto nasce come repository Git vuota. Dentro OpenCode puoi quindi scrivere, per esempio:
+Do this before trusting the hardened profile on a new machine or after meaningful Docker Sandboxes policy changes.
 
-> Stiamo creando XYZ. Definisci una struttura adatta, crea i file necessari, usa solo dipendenze pertinenti, esegui i test e inizializza il progetto in questa cartella.
-
-Git e gia inizializzato dallo script: non chiedere all'LLM di creare un'altra repository annidata.
-
-### Progetto esistente
+## Everyday commands
 
 ```powershell
-.\sandbox.ps1 open "C:\Projects\nome-progetto"
-```
+# Open an existing Git repository in a disposable private clone
+.\sandbox.ps1 open "C:\code\my-project"
 
-Se la relativa sandbox non esiste viene creata. Se esiste viene riutilizzata e la configurazione viene aggiornata.
+# Review the newest agent result without checkout
+.\sandbox.ps1 review "C:\code\my-project"
 
-### Server manuale
+# Recover a sandbox preserved after a failed automatic handoff
+.\sandbox.ps1 handoff "C:\code\my-project"
 
-Normalmente `new` e `open` aprono una seconda finestra PowerShell e avviano il server quando non risponde. Per avviarlo manualmente:
+# Create a new project
+.\sandbox.ps1 new "my-project"
 
-```powershell
+# Validate local dependencies/config
+.\sandbox.ps1 doctor
+
+# Run host-isolation tests
+.\sandbox.ps1 security-test
+
+# Run the disposable Git lifecycle test
+.\sandbox.ps1 handoff-test
+
+# Start llama.cpp manually instead of auto-starting it
 .\sandbox.ps1 server
 ```
 
-### Diagnostica
+## A good first agent prompt
 
-```powershell
-.\sandbox.ps1 doctor
-```
-
-## Comandi principali
+After `open`, try:
 
 ```text
-.\sandbox.ps1 help
-.\sandbox.ps1 bootstrap
-.\sandbox.ps1 doctor
-.\sandbox.ps1 server
-.\sandbox.ps1 new nome-progetto
-.\sandbox.ps1 open C:\percorso\progetto
+Inspect this repository first. Then implement one small, self-contained improvement.
+Run the relevant tests or validation available inside the environment.
+Do not push to any remote. When finished, summarize exactly which files changed,
+which commands/tests you ran, and any unresolved risks.
 ```
 
-Gli script sotto `scripts\` espongono opzioni avanzate, per esempio `-NoAttach`, `-NoAutoStartServer`, `-NoGit` e un nome sandbox esplicito.
+OCBox does not depend on the model behaving safely; this is simply a useful functional test of the workflow.
 
-## Configurazione locale
+## Configuration
 
-`config.example.ps1` contiene tutti i default versionati. `config.local.ps1` contiene normalmente solo le differenze della macchina:
+`config.example.ps1` contains versioned defaults. `config.local.ps1` is ignored and should contain only machine-specific overrides, for example:
 
 ```powershell
 $LlamaRoot = 'C:\AI\llama.cpp'
-$ModelFile = 'Qwen3-8B-Q4_K_M.gguf'
-$ProjectsRoot = 'C:\Projects'
+$ModelFile = 'my-model.gguf'
+$ProjectsRoot = 'C:\code'
 ```
 
-Puoi aggiungere override, per esempio:
+The current performance preset is just a default, not part of the security model. Tune model/context/batching to your hardware.
 
-```powershell
-$ContextSize = 24576
-$SandboxMemory = '8g'
-$SandboxCpus = 8
-$ModelAlias = 'qwen3-8b-q4'
-$OutputTokens = 2048
-```
+Important security settings are versioned and validated by `doctor` and the executable tests.
 
-Un vecchio `config.local.ps1` con poche variabili continua a funzionare: prima vengono caricati i default, poi gli override locali.
+## Network model
 
-## Rete e installazione delle dipendenze dei progetti
+The default profile allows broad **public web traffic on standard HTTP/HTTPS ports 80 and 443**. It is not arbitrary-port Internet access.
 
-L'endpoint locale viene consentito automaticamente solo alla sandbox corrente:
+The llama endpoint is separately allowed as a specific host-local exception. Ports 80 and 443 are intentionally invalid choices for the llama port in the hardened profile because localhost 80/443 are explicitly denied.
 
-```text
-localhost:8080
-```
+If public web access is disabled, `AdditionalNetworkHosts` can be used for an explicit allowlist.
 
-Se usi una policy globale Locked Down e vuoi permettere package manager specifici, aggiungi in `config.local.ps1` soltanto gli host necessari:
+## What this does *not* guarantee
 
-```powershell
-$AdditionalNetworkHosts = @(
-    'registry.npmjs.org:443',
-    'pypi.org:443',
-    'files.pythonhosted.org:443'
-)
-```
+OCBox is defense in depth, not mathematically perfect isolation.
 
-Questi host vengono applicati alle sandbox aperte successivamente. Non usare `"**"` se vuoi mantenere un isolamento di rete significativo.
+It does not protect source confidentiality from a hostile process that can both read your source and access the public Internet. Full web access means a compromised sandbox could exfiltrate source code. Use restrictive egress/DLP for that threat model.
 
-## Configurazione llama.cpp predefinita
+It also cannot eliminate vulnerabilities in the microVM/hypervisor, Docker Sandboxes, its proxy/policy engine, Windows, Git parsing or other trusted host components.
 
-I default attuali sono tarati sul setup verificato con RTX 4070 Laptop 8 GB e 16 GB RAM:
-
-- Qwen3 8B Q4_K_M;
-- contesto `32768`;
-- KV cache `q4_0`;
-- Flash Attention attiva;
-- un solo slot;
-- GPU layers `all`;
-- thinking disabilitato;
-- reasoning format `deepseek` per evitare tag `<think>` vuoti;
-- Web UI disabilitata;
-- HTTPS e bind a `127.0.0.1`.
-
-Se la memoria non basta, prova prima:
-
-```powershell
-$ContextSize = 24576
-```
-
-nel file `config.local.ps1`.
-
-## Configurazione OpenCode
-
-Quando apri un progetto, lo script genera la configurazione effettiva in `.local\generated`, poi la installa nella home della sandbox:
-
-```text
-~/.config/opencode/opencode.json
-```
-
-In questo modo:
-
-- il progetto non riceve un `opencode.json` artificiale;
-- un `opencode.json` realmente appartenente al progetto puo comunque avere precedenza;
-- ogni sandbox mantiene sessioni e stato separati;
-- cambi di modello o contesto vengono propagati alla successiva apertura.
-
-La configurazione predefinita usa `permission: allow`: OpenCode non chiede conferma per ogni operazione, ma resta confinato dalla sandbox. Cambiala in `ask` in `config.local.ps1` se preferisci approvazioni interattive:
-
-```powershell
-$OpenCodePermission = 'ask'
-```
-
-## Aggiornare il template
-
-Dentro la repository del template:
-
-```powershell
-git pull
-.\sandbox.ps1 doctor
-```
-
-Le sandbox esistenti ricevono la nuova configurazione quando le riapri.
-
-## Migrazione dalla prima versione
-
-La vecchia sandbox `agentbox-test` non viene rimossa automaticamente. Dopo aver verificato una nuova sandbox per un progetto, puoi elencare e rimuovere manualmente quella vecchia:
-
-```powershell
-sbx ls
-sbx rm agentbox-test
-```
-
-`sbx rm` elimina lo stato della sandbox, non la cartella progetto sull'host, ma resta un'operazione irreversibile per i pacchetti e le sessioni conservati nella microVM.
-
-## Risoluzione problemi
-
-### Script PowerShell bloccati
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-```
-
-### Sandbox non autenticata
-
-```powershell
-sbx login
-```
-
-### Server non raggiungibile
-
-```powershell
-.\sandbox.ps1 server
-```
-
-In un altro terminale, indicando esplicitamente la CA senza aggiungerla al trust globale di Windows:
-
-```powershell
-$CARoot = (& mkcert -CAROOT).Trim()
-curl.exe --cacert "$CARoot\rootCA.pem" https://localhost:8080/v1/models
-```
-
-### Controllare le richieste di rete
-
-Trova il nome con `sbx ls`, poi:
-
-```powershell
-sbx policy log NOME-SANDBOX --limit 20
-```
-
-### Certificato non attendibile
-
-```powershell
-.\scripts\generate-certs.ps1
-.\sandbox.ps1 open "C:\percorso\progetto"
-```
-
-La seconda operazione reinstalla la CA nella sandbox.
-
-## File della repository
+## Project layout
 
 ```text
 .
-|-- sandbox.ps1
-|-- config.example.ps1
-|-- opencode.json
-|-- AGENTS.md
-|-- scripts
-|   |-- bootstrap.ps1
-|   |-- doctor.ps1
-|   |-- generate-certs.ps1
-|   |-- new-project.ps1
-|   |-- open-project.ps1
-|   |-- start-llama.ps1
-|   |-- run-opencode.ps1
-|   |-- setup-sandbox.ps1
-|   `-- private\Common.ps1
-|-- tests\static-tests.ps1
-|-- .github\workflows\validate.yml
-|-- .gitattributes
-|-- .gitignore
-`-- README.md
+├── sandbox.ps1                 # public CLI
+├── config.example.ps1          # versioned defaults
+├── SECURITY.md
+├── LICENSE
+├── scripts/
+│   ├── bootstrap.ps1
+│   ├── doctor.ps1
+│   ├── open-project.ps1
+│   ├── review-project.ps1
+│   ├── handoff-project.ps1
+│   ├── security-test.ps1
+│   ├── handoff-test.ps1
+│   ├── start-llama.ps1
+│   └── private/
+│       ├── Common.ps1
+│       └── GitHandoff.ps1
+├── tests/
+│   └── static-tests.ps1
+└── .github/workflows/validate.yml
 ```
 
-`run-opencode.ps1` e `setup-sandbox.ps1` restano come wrapper di compatibilita; per il normale utilizzo usa `sandbox.ps1`.
+## Status
+
+OCBox is early-stage and Windows-focused. The security model is deliberately narrow: local OpenCode + local llama.cpp + Docker Sandboxes + Git-based disposable handoff.
+
+If you try it on another machine, run the executable tests and report differences rather than assuming the policy behaves identically.
+
+## License
+
+MIT.
