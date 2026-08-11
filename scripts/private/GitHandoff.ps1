@@ -10,10 +10,14 @@ function Invoke-SandboxShellCapture {
     # commonly CRLF on Windows, while the sandbox shell expects LF.
     $LinuxCommand = $Command.Replace("`r`n", "`n").Replace("`r", "")
 
+    # Run a one-shot shell *inside the existing sandbox*. Do not use
+    # `sbx run shell --name ...`: `sbx run` is agent-specific and refuses an
+    # existing sandbox created for another agent such as OpenCode. `sbx exec`
+    # is the documented mechanism for commands inside any existing sandbox.
     $Previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $Output = @(& sbx run shell --name $SandboxName -- -c $LinuxCommand 2>&1)
+        $Output = @(& sbx exec $SandboxName bash -c $LinuxCommand 2>&1)
         $Code = $LASTEXITCODE
     }
     finally {
