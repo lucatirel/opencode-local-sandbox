@@ -6,10 +6,16 @@ function Invoke-SandboxShellCapture {
         [Parameter(Mandatory = $true)][string]$Command
     )
 
+    # PowerShell scripts are commonly checked out with CRLF on Windows. Passing a
+    # multiline string verbatim to the Linux shell leaves the carriage return
+    # attached to tokens such as `set -eu\r` or `git add -A\r`. Normalize exactly
+    # at the Windows -> Linux boundary so every handoff command is shell-safe.
+    $LinuxCommand = $Command.Replace("`r`n", "`n").Replace("`r", "")
+
     $Previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $Output = @(& sbx run shell --name $SandboxName -- -c $Command 2>&1)
+        $Output = @(& sbx run shell --name $SandboxName -- -c $LinuxCommand 2>&1)
         $Code = $LASTEXITCODE
     }
     finally {
