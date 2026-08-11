@@ -10,10 +10,8 @@ function Invoke-SandboxShellCapture {
     # commonly CRLF on Windows, while the sandbox shell expects LF.
     $LinuxCommand = $Command.Replace("`r`n", "`n").Replace("`r", "")
 
-    # Run a one-shot shell *inside the existing sandbox*. Do not use
-    # `sbx run shell --name ...`: `sbx run` is agent-specific and refuses an
-    # existing sandbox created for another agent such as OpenCode. `sbx exec`
-    # is the documented mechanism for commands inside any existing sandbox.
+    # Run a one-shot shell inside the existing sandbox. `sbx run` is agent-specific;
+    # `sbx exec` works for an existing OpenCode sandbox without re-attaching the agent.
     $Previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -50,10 +48,6 @@ function New-SandboxGitSnapshot {
     $Message = "ocbox snapshot $SessionId"
     $IgnoredList = "/tmp/ocbox-ignored-$SessionId.txt"
 
-    # Keep the sandbox as the only place where project code is executed. The host
-    # will not trust text emitted by this command; it will independently fetch and
-    # resolve the deterministic snapshot ref afterwards.
-    #
     # Refuse automatic destruction when ignored files exist. `git add -A` cannot
     # preserve them, and an ignored file may still be valuable agent output.
     $Command = @"
@@ -98,80 +92,117 @@ function Export-SandboxGitHandoff {
     $RemoteName = "sandbox-$SandboxName"
     $RefRoot = "refs/ocbox/$SessionId"
     $SnapshotRef = "$RefRoot/snapshot"
+    $BundleInSandbox = "/tmp/ocbox-handoff-$SessionId.bundle"
+    $BundleHost = Join-Path ([IO.Path]::GetTempPath()) "ocbox-handoff-$SessionId.bundle"
 
     $HostHeadBefore = (& git -C $ProjectPath rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0) { throw "Impossibile leggere HEAD del repository host." }
     $HostStatusBefore = (@(& git -C $ProjectPath status --porcelain=v1 2>$null) -join "`n")
     if ($LASTEXITCODE -ne 0) { throw "Impossibile leggere lo stato del repository host." }
 
-    $Previous = $ErrorActionPreference
+    Remove-Item -LiteralPath $BundleHost -Force -ErrorAction SilentlyContinue
+
     try {
-        $ErrorActionPreference = "Continue"
-        $RemoteUrl = @(& git -C $ProjectPath remote get-url $RemoteName 2>&1)
-        $RemoteCode = $LASTEXITCODE
+        # Do not depend on Docker's ephemeral sandbox-<name> Git remote. Build a Git
+        # bundle inside the microVM and copy that inert file to the host. Include all
+        # branch tips so agent-created branches survive alongside the forced snapshot.
+        $BundleCommand = @"
+set -eu
+rm -f '$BundleInSandbox'
+git bundle create '$BundleInSandbox' --branches
+test -s '$BundleInSandbox'
+"@
+        $BundleResult = Invoke-SandboxShellCapture -SandboxName $SandboxName -Command $BundleCommand
+        if ($BundleResult.Code -ne 0) {
+            throw "Creazione Git bundle nella sandbox fallita (exit $($BundleResult.Code)). Sandbox conservata. Output: $($BundleResult.Text)"
+        }
+
+        $Previous = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $CopyOutput = @(& sbx cp "${SandboxName}:${BundleInSandbox}" $BundleHost 2>&1)
+            $CopyCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $Previous
+        }
+        if ($CopyCode -ne 0 -or -not (Test-Path -LiteralPath $BundleHost -PathType Leaf)) {
+            throw "Copia Git bundle sandbox -> host fallita. Sandbox conservata. Output: $($CopyOutput -join ' ')"
+        }
+
+        # Validate the bundle with host Git before importing any refs. This parses Git
+        # data only; it performs no checkout, merge, hook, package script or project code.
+        $Previous = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $VerifyOutput = @(& git -C $ProjectPath bundle verify $BundleHost 2>&1)
+            $VerifyCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $Previous
+        }
+        if ($VerifyCode -ne 0) {
+            throw "Verifica Git bundle sul host fallita. Sandbox conservata. Output: $($VerifyOutput -join ' ')"
+        }
+
+        $BranchRefspec = "+refs/heads/*:$RefRoot/heads/*"
+        $Previous = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $FetchOutput = @(& git -C $ProjectPath fetch --no-tags --force $BundleHost $BranchRefspec 2>&1)
+            $FetchCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $Previous
+        }
+        if ($FetchCode -ne 0) {
+            throw "Import handoff dal Git bundle fallito. Sandbox conservata. Output: $($FetchOutput -join ' ')"
+        }
+
+        # The host independently resolves the deterministic snapshot branch. Do not
+        # trust a SHA printed by the compromised sandbox.
+        $FetchedSnapshotSource = "$RefRoot/heads/$($Snapshot.Branch)"
+        $Previous = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $FetchedShaOutput = @(& git -C $ProjectPath rev-parse --verify "$FetchedSnapshotSource^{commit}" 2>&1)
+            $FetchedShaCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $Previous
+        }
+        if ($FetchedShaCode -ne 0 -or $FetchedShaOutput.Count -eq 0) {
+            throw "Il branch snapshot non e stato importato/verificato dal host: $FetchedSnapshotSource. Sandbox conservata."
+        }
+        $FetchedSha = "$($FetchedShaOutput[-1])".Trim().ToLowerInvariant()
+        if ($FetchedSha -notmatch '^[0-9a-f]{40,64}$') {
+            throw "SHA handoff non valida per $($FetchedSnapshotSource): $FetchedSha. Sandbox conservata."
+        }
+
+        & git -C $ProjectPath update-ref $SnapshotRef $FetchedSha
+        if ($LASTEXITCODE -ne 0) {
+            throw "Impossibile creare il ref passivo $SnapshotRef. Sandbox conservata."
+        }
+
+        $HostHeadAfter = (& git -C $ProjectPath rev-parse HEAD).Trim()
+        $HostStatusAfter = (@(& git -C $ProjectPath status --porcelain=v1 2>$null) -join "`n")
+        if ($HostHeadAfter -ne $HostHeadBefore -or $HostStatusAfter -ne $HostStatusBefore) {
+            throw "Il working tree host e cambiato durante l'handoff. Sandbox conservata per analisi."
+        }
+
+        return [pscustomobject]@{
+            SessionId = $SessionId
+            RefRoot = $RefRoot
+            SnapshotRef = $SnapshotRef
+            SnapshotSha = $FetchedSha
+            RemoteName = $RemoteName
+            IgnoredCount = $Snapshot.IgnoredCount
+            HostHead = $HostHeadBefore
+            Transport = "git-bundle"
+        }
     }
     finally {
-        $ErrorActionPreference = $Previous
-    }
-    if ($RemoteCode -ne 0) {
-        throw "Remote $RemoteName non disponibile. Non distruggo la sandbox. Output: $($RemoteUrl -join ' ')"
-    }
-
-    # Fetch every advertised branch into a passive namespace. No checkout, merge,
-    # rebase, hook, package script or project code is executed on the host.
-    $BranchRefspec = "+refs/heads/*:$RefRoot/heads/*"
-    $Previous = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        $FetchOutput = @(& git -C $ProjectPath fetch --no-tags --force $RemoteName $BranchRefspec 2>&1)
-        $FetchCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $Previous
-    }
-    if ($FetchCode -ne 0) {
-        throw "Fetch handoff fallito. Non distruggo la sandbox. Output: $($FetchOutput -join ' ')"
-    }
-
-    # The host independently resolves the deterministic snapshot branch. Do not
-    # trust a SHA printed by the compromised sandbox.
-    $FetchedSnapshotSource = "$RefRoot/heads/$($Snapshot.Branch)"
-    $Previous = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        $FetchedShaOutput = @(& git -C $ProjectPath rev-parse --verify "$FetchedSnapshotSource^{commit}" 2>&1)
-        $FetchedShaCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $Previous
-    }
-    if ($FetchedShaCode -ne 0 -or $FetchedShaOutput.Count -eq 0) {
-        throw "Il branch snapshot non e stato ricevuto/verificato dal host: $FetchedSnapshotSource. Sandbox conservata."
-    }
-    $FetchedSha = "$($FetchedShaOutput[-1])".Trim().ToLowerInvariant()
-    if ($FetchedSha -notmatch '^[0-9a-f]{40,64}$') {
-        throw "SHA fetch non valida per $($FetchedSnapshotSource): $FetchedSha. Sandbox conservata."
-    }
-
-    & git -C $ProjectPath update-ref $SnapshotRef $FetchedSha
-    if ($LASTEXITCODE -ne 0) {
-        throw "Impossibile creare il ref passivo $SnapshotRef. Sandbox conservata."
-    }
-
-    $HostHeadAfter = (& git -C $ProjectPath rev-parse HEAD).Trim()
-    $HostStatusAfter = (@(& git -C $ProjectPath status --porcelain=v1 2>$null) -join "`n")
-    if ($HostHeadAfter -ne $HostHeadBefore -or $HostStatusAfter -ne $HostStatusBefore) {
-        throw "Il working tree host e cambiato durante l'handoff. Sandbox conservata per analisi."
-    }
-
-    return [pscustomobject]@{
-        SessionId = $SessionId
-        RefRoot = $RefRoot
-        SnapshotRef = $SnapshotRef
-        SnapshotSha = $FetchedSha
-        RemoteName = $RemoteName
-        IgnoredCount = $Snapshot.IgnoredCount
-        HostHead = $HostHeadBefore
+        Remove-Item -LiteralPath $BundleHost -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -195,8 +226,8 @@ function Remove-SandboxAfterHandoff {
         throw "Handoff salvato in $($Handoff.SnapshotRef), ma sbx rm e fallito. Output: $($Output -join ' ')"
     }
 
-    # Docker normally removes sandbox-<name> automatically. If a stale remote
-    # remains, remove only that remote; never touch branches or the working tree.
+    # If Docker left its convenience remote behind, remove only that remote. The
+    # preserved refs/ocbox/* namespace is independent from it and survives sbx rm.
     $Previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
