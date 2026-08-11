@@ -28,10 +28,10 @@ $HostHeadBefore = (& git -C $Repo rev-parse HEAD).Trim()
 $HostStatusBefore = (@(& git -C $Repo status --porcelain=v1) -join "`n")
 
 try {
-    Write-Host "Creo sandbox clone-mode usa-e-getta: $Sandbox" -ForegroundColor Cyan
-    Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
+    Write-Host "Creo sandbox OpenCode clone-mode usa-e-getta: $Sandbox" -ForegroundColor Cyan
+    Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "opencode", $Repo) | Out-Null
 
-    Write-Host "Creo modifiche solo nel clone privato..." -ForegroundColor DarkGray
+    Write-Host "Creo modifiche via sbx exec dentro la sandbox OpenCode..." -ForegroundColor DarkGray
     $Write = Invoke-SandboxShellCapture -SandboxName $Sandbox -Command "printf '%s\n' '$ExpectedText' > handoff-proof.txt && printf '%s\n' 'second change' >> README.txt"
     if ($Write.Code -ne 0) { throw "Impossibile creare la modifica nella sandbox: $($Write.Text)" }
 
@@ -39,7 +39,7 @@ try {
         throw "FAIL: la modifica sandbox e comparsa nel working tree host prima dell'handoff."
     }
 
-    Write-Host "Creo snapshot Git nella microVM..." -ForegroundColor DarkGray
+    Write-Host "Creo snapshot Git nella microVM OpenCode..." -ForegroundColor DarkGray
     $Snapshot = New-SandboxGitSnapshot -SandboxName $Sandbox -SessionId $SessionId
     if ($Snapshot.IgnoredCount -gt 0) {
         throw "Il test ha prodotto file ignored non preservati ($($Snapshot.IgnoredCount)); non distruggo la sandbox."
@@ -75,15 +75,15 @@ try {
     }
 
     Write-Host ""
-    Write-Host "GIT HANDOFF: PASS" -ForegroundColor Green
+    Write-Host "GIT HANDOFF OPENCode: PASS" -ForegroundColor Green
     Write-Host "  Host HEAD invariato: $HostHeadFinal" -ForegroundColor Green
     Write-Host "  Snapshot preservato: $($Handoff.SnapshotRef) -> $($Handoff.SnapshotSha)" -ForegroundColor Green
-    Write-Host "  Sandbox distrutta: $Sandbox" -ForegroundColor Green
+    Write-Host "  Sandbox OpenCode distrutta: $Sandbox" -ForegroundColor Green
     Write-Host "  Working tree host: invariato" -ForegroundColor Green
 }
 finally {
     if (-not $SandboxRemoved) {
-        Write-Warning "Test non completato: provo a lasciare intatta la sandbox se esiste per diagnosi."
+        Write-Warning "Test non completato: lascio intatta la sandbox se esiste per diagnosi."
     }
     Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
 }
