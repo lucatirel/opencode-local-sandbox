@@ -146,7 +146,7 @@ function Export-SandboxGitHandoff {
     }
     $FetchedSha = "$($FetchedShaOutput[-1])".Trim().ToLowerInvariant()
     if ($FetchedSha -notmatch '^[0-9a-f]{40,64}$') {
-        throw "SHA fetch non valida per $FetchedSnapshotSource: $FetchedSha. Sandbox conservata."
+        throw "SHA fetch non valida per $($FetchedSnapshotSource): $FetchedSha. Sandbox conservata."
     }
 
     & git -C $ProjectPath update-ref $SnapshotRef $FetchedSha
