@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("help", "bootstrap", "doctor", "server", "new", "open", "security-test", "handoff-test")]
+    [ValidateSet("help", "bootstrap", "doctor", "server", "new", "open", "handoff", "security-test", "handoff-test")]
     [string]$Command = "help",
 
     [Parameter(Position = 1)]
@@ -27,6 +27,12 @@ switch ($Command) {
     "handoff-test" {
         & (Join-Path $Scripts "handoff-test.ps1")
     }
+    "handoff" {
+        if ([string]::IsNullOrWhiteSpace($Target)) {
+            $Target = Read-Host "Percorso completo del progetto da recuperare"
+        }
+        & (Join-Path $Scripts "handoff-project.ps1") -ProjectPath $Target
+    }
     "new" {
         if ([string]::IsNullOrWhiteSpace($Target)) {
             $Target = Read-Host "Nome del nuovo progetto"
@@ -46,7 +52,8 @@ switch ($Command) {
         Write-Host "  .\sandbox.ps1 bootstrap              prima configurazione del PC"
         Write-Host "  .\sandbox.ps1 doctor                 controlla installazione e file"
         Write-Host "  .\sandbox.ps1 security-test          verifica isolamento host con microVM usa-e-getta"
-        Write-Host "  .\sandbox.ps1 handoff-test           verifica snapshot/fetch/rm senza toccare il working tree"
+        Write-Host "  .\sandbox.ps1 handoff-test           verifica handoff su una vera sandbox OpenCode"
+        Write-Host "  .\sandbox.ps1 handoff C:\Projects\app recupera una sandbox esistente senza riaprire OpenCode"
         Write-Host "  .\sandbox.ps1 server                 avvia llama-server in primo piano"
         Write-Host "  .\sandbox.ps1 new nome-progetto      crea Git + sandbox e apre OpenCode"
         Write-Host "  .\sandbox.ps1 open C:\Projects\app   apre un progetto esistente in clone mode"
