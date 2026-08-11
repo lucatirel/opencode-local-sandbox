@@ -34,6 +34,37 @@ function Get-HandoffSessionId {
     return "$Stamp-$Nonce"
 }
 
+function Get-SandboxProtocolValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][string]$Marker
+    )
+
+    # sbx prepends informational lines and different Windows terminals can preserve
+    # CR characters or ANSI sequences differently. Parse the protocol structurally
+    # instead of relying on a multiline regex over the whole native-command output.
+    $Lines = @([regex]::Split($Text, "`r?`n") | ForEach-Object {
+        $Line = "$_"
+        $Line = [regex]::Replace($Line, [char]27 + '\[[0-?]*[ -/]*[@-~]', '')
+        # Some renderers escape underscores in displayed native output. Accept that
+        # representation for marker recognition only; values are validated below.
+        $Line.Trim().Replace('\_', '_')
+    })
+
+    for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
+        if ($Lines[$Index] -ne $Marker) { continue }
+
+        for ($ValueIndex = $Index + 1; $ValueIndex -lt $Lines.Count; $ValueIndex++) {
+            if (-not [string]::IsNullOrWhiteSpace($Lines[$ValueIndex])) {
+                return $Lines[$ValueIndex]
+            }
+        }
+        return $null
+    }
+
+    return $null
+}
+
 function New-SandboxGitSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$SandboxName,
@@ -76,17 +107,24 @@ printf '\n'
         throw "Snapshot Git nella sandbox fallito (exit $($Result.Code)). Sandbox conservata. Output: $($Result.Text)"
     }
 
-    $ShaMatch = [regex]::Match($Result.Text, '(?m)^SNAPSHOT_SHA\n([0-9a-fA-F]{40,64})$')
-    $BranchMatch = [regex]::Match($Result.Text, '(?m)^SNAPSHOT_BRANCH\n([^\r\n]+)$')
-    $IgnoredMatch = [regex]::Match($Result.Text, '(?m)^IGNORED_COUNT\n([0-9]+)$')
-    if (-not $ShaMatch.Success -or -not $BranchMatch.Success -or -not $IgnoredMatch.Success) {
-        throw "Impossibile verificare lo snapshot Git prodotto dalla sandbox. Sandbox conservata. Output: $($Result.Text)"
+    $SnapshotSha = Get-SandboxProtocolValue -Text $Result.Text -Marker "SNAPSHOT_SHA"
+    $SnapshotBranchOut = Get-SandboxProtocolValue -Text $Result.Text -Marker "SNAPSHOT_BRANCH"
+    $IgnoredCountText = Get-SandboxProtocolValue -Text $Result.Text -Marker "IGNORED_COUNT"
+
+    if ([string]::IsNullOrWhiteSpace($SnapshotSha) -or $SnapshotSha -notmatch '^[0-9a-fA-F]{40,64}$') {
+        throw "SHA snapshot non valido o non trovato. Sandbox conservata. Output: $($Result.Text)"
+    }
+    if ($SnapshotBranchOut -ne $SnapshotBranch) {
+        throw "Branch snapshot non valido. Atteso [$SnapshotBranch], ottenuto [$SnapshotBranchOut]. Sandbox conservata."
+    }
+    if ([string]::IsNullOrWhiteSpace($IgnoredCountText) -or $IgnoredCountText -notmatch '^[0-9]+$') {
+        throw "Ignored count snapshot non valido o non trovato. Sandbox conservata. Output: $($Result.Text)"
     }
 
     return [pscustomobject]@{
-        Sha = $ShaMatch.Groups[1].Value.ToLowerInvariant()
-        Branch = $BranchMatch.Groups[1].Value
-        IgnoredCount = [int]$IgnoredMatch.Groups[1].Value
+        Sha = $SnapshotSha.ToLowerInvariant()
+        Branch = $SnapshotBranchOut
+        IgnoredCount = [int]$IgnoredCountText
     }
 }
 
