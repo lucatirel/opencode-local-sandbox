@@ -6,10 +6,8 @@ function Invoke-SandboxShellCapture {
         [Parameter(Mandatory = $true)][string]$Command
     )
 
-    # PowerShell scripts are commonly checked out with CRLF on Windows. Passing a
-    # multiline string verbatim to the Linux shell leaves the carriage return
-    # attached to tokens such as `set -eu\r` or `git add -A\r`. Normalize exactly
-    # at the Windows -> Linux boundary so every handoff command is shell-safe.
+    # Normalize exactly at the Windows -> Linux boundary. PowerShell files are
+    # commonly CRLF on Windows, while the sandbox shell expects LF.
     $LinuxCommand = $Command.Replace("`r`n", "`n").Replace("`r", "")
 
     $Previous = $ErrorActionPreference
@@ -34,37 +32,6 @@ function Get-HandoffSessionId {
     return "$Stamp-$Nonce"
 }
 
-function Get-SandboxProtocolValue {
-    param(
-        [Parameter(Mandatory = $true)][string]$Text,
-        [Parameter(Mandatory = $true)][string]$Marker
-    )
-
-    # sbx prepends informational lines and different Windows terminals can preserve
-    # CR characters or ANSI sequences differently. Parse the protocol structurally
-    # instead of relying on a multiline regex over the whole native-command output.
-    $Lines = @([regex]::Split($Text, "`r?`n") | ForEach-Object {
-        $Line = "$_"
-        $Line = [regex]::Replace($Line, [char]27 + '\[[0-?]*[ -/]*[@-~]', '')
-        # Some renderers escape underscores in displayed native output. Accept that
-        # representation for marker recognition only; values are validated below.
-        $Line.Trim().Replace('\_', '_')
-    })
-
-    for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
-        if ($Lines[$Index] -ne $Marker) { continue }
-
-        for ($ValueIndex = $Index + 1; $ValueIndex -lt $Lines.Count; $ValueIndex++) {
-            if (-not [string]::IsNullOrWhiteSpace($Lines[$ValueIndex])) {
-                return $Lines[$ValueIndex]
-            }
-        }
-        return $null
-    }
-
-    return $null
-}
-
 function New-SandboxGitSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$SandboxName,
@@ -77,54 +44,42 @@ function New-SandboxGitSnapshot {
 
     $SnapshotBranch = "ocbox-snapshot-$SessionId"
     $Message = "ocbox snapshot $SessionId"
+    $IgnoredList = "/tmp/ocbox-ignored-$SessionId.txt"
 
-    # The sandbox may be fully compromised. This command is allowed to execute there;
-    # the host trusts only the Git objects it later fetches as passive refs. Disable
-    # commit hooks/signing so a project hook cannot block the preservation step.
+    # Keep the sandbox as the only place where project code is executed. The host
+    # will not trust text emitted by this command; it will independently fetch and
+    # resolve the deterministic snapshot ref afterwards.
     #
-    # Deliberately avoid shell command substitution ($(...)) here. The command crosses
-    # PowerShell -> sbx -> Linux shell, and nested substitution/quoting is unnecessary
-    # for this protocol. Emit marker lines followed by plain command output instead.
+    # Refuse automatic destruction when ignored files exist. `git add -A` cannot
+    # preserve them, and an ignored file may still be valuable agent output.
     $Command = @"
 set -eu
 git rev-parse --is-inside-work-tree >/dev/null
+git ls-files --others -i --exclude-standard > '$IgnoredList'
+if [ -s '$IgnoredList' ]; then
+  printf '%s\n' 'OCBOXIGNOREDFILES'
+  cat '$IgnoredList'
+  exit 42
+fi
 git add -A
 if ! git diff --cached --quiet; then
   git -c core.hooksPath=/dev/null -c user.name='OCBox Snapshot' -c user.email='snapshot@localhost' commit --no-gpg-sign -m '$Message' >/dev/null
 fi
 git update-ref 'refs/heads/$SnapshotBranch' HEAD
-printf '%s\n' 'SNAPSHOT_SHA'
-git rev-parse HEAD
-printf '%s\n' 'SNAPSHOT_BRANCH'
-printf '%s\n' '$SnapshotBranch'
-printf '%s\n' 'IGNORED_COUNT'
-git ls-files --others -i --exclude-standard | wc -l | tr -d ' '
-printf '\n'
+git show-ref --verify --quiet 'refs/heads/$SnapshotBranch'
 "@
 
     $Result = Invoke-SandboxShellCapture -SandboxName $SandboxName -Command $Command
+    if ($Result.Code -eq 42) {
+        throw "La sandbox contiene file gitignored non preservabili automaticamente. Sandbox conservata. Output: $($Result.Text)"
+    }
     if ($Result.Code -ne 0) {
         throw "Snapshot Git nella sandbox fallito (exit $($Result.Code)). Sandbox conservata. Output: $($Result.Text)"
     }
 
-    $SnapshotSha = Get-SandboxProtocolValue -Text $Result.Text -Marker "SNAPSHOT_SHA"
-    $SnapshotBranchOut = Get-SandboxProtocolValue -Text $Result.Text -Marker "SNAPSHOT_BRANCH"
-    $IgnoredCountText = Get-SandboxProtocolValue -Text $Result.Text -Marker "IGNORED_COUNT"
-
-    if ([string]::IsNullOrWhiteSpace($SnapshotSha) -or $SnapshotSha -notmatch '^[0-9a-fA-F]{40,64}$') {
-        throw "SHA snapshot non valido o non trovato. Sandbox conservata. Output: $($Result.Text)"
-    }
-    if ($SnapshotBranchOut -ne $SnapshotBranch) {
-        throw "Branch snapshot non valido. Atteso [$SnapshotBranch], ottenuto [$SnapshotBranchOut]. Sandbox conservata."
-    }
-    if ([string]::IsNullOrWhiteSpace($IgnoredCountText) -or $IgnoredCountText -notmatch '^[0-9]+$') {
-        throw "Ignored count snapshot non valido o non trovato. Sandbox conservata. Output: $($Result.Text)"
-    }
-
     return [pscustomobject]@{
-        Sha = $SnapshotSha.ToLowerInvariant()
-        Branch = $SnapshotBranchOut
-        IgnoredCount = [int]$IgnoredCountText
+        Branch = $SnapshotBranch
+        IgnoredCount = 0
     }
 }
 
@@ -158,8 +113,8 @@ function Export-SandboxGitHandoff {
         throw "Remote $RemoteName non disponibile. Non distruggo la sandbox. Output: $($RemoteUrl -join ' ')"
     }
 
-    # Fetch every advertised branch into a private passive namespace. This never
-    # checks out, merges, rebases, runs project code, or changes the host working tree.
+    # Fetch every advertised branch into a passive namespace. No checkout, merge,
+    # rebase, hook, package script or project code is executed on the host.
     $BranchRefspec = "+refs/heads/*:$RefRoot/heads/*"
     $Previous = $ErrorActionPreference
     try {
@@ -174,13 +129,27 @@ function Export-SandboxGitHandoff {
         throw "Fetch handoff fallito. Non distruggo la sandbox. Output: $($FetchOutput -join ' ')"
     }
 
+    # The host independently resolves the deterministic snapshot branch. Do not
+    # trust a SHA printed by the compromised sandbox.
     $FetchedSnapshotSource = "$RefRoot/heads/$($Snapshot.Branch)"
-    $FetchedSha = (& git -C $ProjectPath rev-parse $FetchedSnapshotSource).Trim()
-    if ($LASTEXITCODE -ne 0 -or $FetchedSha.ToLowerInvariant() -ne $Snapshot.Sha) {
-        throw "Verifica SHA handoff fallita. Atteso $($Snapshot.Sha), ottenuto $FetchedSha. Sandbox conservata."
+    $Previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $FetchedShaOutput = @(& git -C $ProjectPath rev-parse --verify "$FetchedSnapshotSource^{commit}" 2>&1)
+        $FetchedShaCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $Previous
+    }
+    if ($FetchedShaCode -ne 0 -or $FetchedShaOutput.Count -eq 0) {
+        throw "Il branch snapshot non e stato ricevuto/verificato dal host: $FetchedSnapshotSource. Sandbox conservata."
+    }
+    $FetchedSha = "$($FetchedShaOutput[-1])".Trim().ToLowerInvariant()
+    if ($FetchedSha -notmatch '^[0-9a-f]{40,64}$') {
+        throw "SHA fetch non valida per $FetchedSnapshotSource: $FetchedSha. Sandbox conservata."
     }
 
-    & git -C $ProjectPath update-ref $SnapshotRef $Snapshot.Sha
+    & git -C $ProjectPath update-ref $SnapshotRef $FetchedSha
     if ($LASTEXITCODE -ne 0) {
         throw "Impossibile creare il ref passivo $SnapshotRef. Sandbox conservata."
     }
@@ -195,7 +164,7 @@ function Export-SandboxGitHandoff {
         SessionId = $SessionId
         RefRoot = $RefRoot
         SnapshotRef = $SnapshotRef
-        SnapshotSha = $Snapshot.Sha
+        SnapshotSha = $FetchedSha
         RemoteName = $RemoteName
         IgnoredCount = $Snapshot.IgnoredCount
         HostHead = $HostHeadBefore
