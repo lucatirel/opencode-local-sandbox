@@ -50,6 +50,10 @@ function New-SandboxGitSnapshot {
     # The sandbox may be fully compromised. This command is allowed to execute there;
     # the host trusts only the Git objects it later fetches as passive refs. Disable
     # commit hooks/signing so a project hook cannot block the preservation step.
+    #
+    # Deliberately avoid shell command substitution ($(...)) here. The command crosses
+    # PowerShell -> sbx -> Linux shell, and nested substitution/quoting is unnecessary
+    # for this protocol. Emit marker lines followed by plain command output instead.
     $Command = @"
 set -eu
 git rev-parse --is-inside-work-tree >/dev/null
@@ -58,9 +62,13 @@ if ! git diff --cached --quiet; then
   git -c core.hooksPath=/dev/null -c user.name='OCBox Snapshot' -c user.email='snapshot@localhost' commit --no-gpg-sign -m '$Message' >/dev/null
 fi
 git update-ref 'refs/heads/$SnapshotBranch' HEAD
-printf 'SNAPSHOT_SHA=%s\n' "`$(git rev-parse HEAD)"
-printf 'SNAPSHOT_BRANCH=%s\n' '$SnapshotBranch'
-printf 'IGNORED_COUNT=%s\n' "`$(git ls-files --others -i --exclude-standard | wc -l | tr -d ' ')"
+printf '%s\n' 'SNAPSHOT_SHA'
+git rev-parse HEAD
+printf '%s\n' 'SNAPSHOT_BRANCH'
+printf '%s\n' '$SnapshotBranch'
+printf '%s\n' 'IGNORED_COUNT'
+git ls-files --others -i --exclude-standard | wc -l | tr -d ' '
+printf '\n'
 "@
 
     $Result = Invoke-SandboxShellCapture -SandboxName $SandboxName -Command $Command
@@ -68,17 +76,17 @@ printf 'IGNORED_COUNT=%s\n' "`$(git ls-files --others -i --exclude-standard | wc
         throw "Snapshot Git nella sandbox fallito (exit $($Result.Code)). Sandbox conservata. Output: $($Result.Text)"
     }
 
-    $ShaMatch = [regex]::Match($Result.Text, '(?m)^SNAPSHOT_SHA=([0-9a-fA-F]{40,64})$')
-    $BranchMatch = [regex]::Match($Result.Text, '(?m)^SNAPSHOT_BRANCH=([^\r\n]+)$')
-    $IgnoredMatch = [regex]::Match($Result.Text, '(?m)^IGNORED_COUNT=([0-9]+)$')
-    if (-not $ShaMatch.Success -or -not $BranchMatch.Success) {
+    $ShaMatch = [regex]::Match($Result.Text, '(?m)^SNAPSHOT_SHA\n([0-9a-fA-F]{40,64})$')
+    $BranchMatch = [regex]::Match($Result.Text, '(?m)^SNAPSHOT_BRANCH\n([^\r\n]+)$')
+    $IgnoredMatch = [regex]::Match($Result.Text, '(?m)^IGNORED_COUNT\n([0-9]+)$')
+    if (-not $ShaMatch.Success -or -not $BranchMatch.Success -or -not $IgnoredMatch.Success) {
         throw "Impossibile verificare lo snapshot Git prodotto dalla sandbox. Sandbox conservata. Output: $($Result.Text)"
     }
 
     return [pscustomobject]@{
         Sha = $ShaMatch.Groups[1].Value.ToLowerInvariant()
         Branch = $BranchMatch.Groups[1].Value
-        IgnoredCount = if ($IgnoredMatch.Success) { [int]$IgnoredMatch.Groups[1].Value } else { -1 }
+        IgnoredCount = [int]$IgnoredMatch.Groups[1].Value
     }
 }
 
