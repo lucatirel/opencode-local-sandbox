@@ -136,20 +136,15 @@ function Get-ProjectSandboxName {
     $FullPath = [IO.Path]::GetFullPath($ProjectPath).ToLowerInvariant()
     $Leaf = Split-Path -Leaf $FullPath
     $Slug = ($Leaf.ToLowerInvariant() -replace '[^a-z0-9.+-]', '-').Trim('-')
-    if ([string]::IsNullOrWhiteSpace($Slug)) {
-        $Slug = "project"
-    }
-    if ($Slug.Length -gt 32) {
-        $Slug = $Slug.Substring(0, 32).TrimEnd('-')
-    }
+    if ([string]::IsNullOrWhiteSpace($Slug)) { $Slug = "project" }
+    if ($Slug.Length -gt 32) { $Slug = $Slug.Substring(0, 32).TrimEnd('-') }
 
     $Hasher = [Security.Cryptography.SHA256]::Create()
     try {
         $Bytes = $Hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($FullPath))
     }
-    finally {
-        $Hasher.Dispose()
-    }
+    finally { $Hasher.Dispose() }
+
     $Hash = (($Bytes[0..3] | ForEach-Object { $_.ToString("x2") }) -join "")
     return "$Prefix-$Slug-$Hash"
 }
@@ -163,9 +158,7 @@ function Get-SandboxNames {
         $Output = @(& sbx ls -q 2>$null)
         $SbxListExitCode = $LASTEXITCODE
     }
-    finally {
-        $ErrorActionPreference = $PreviousErrorActionPreference
-    }
+    finally { $ErrorActionPreference = $PreviousErrorActionPreference }
 
     if ($SbxListExitCode -ne 0) {
         throw "Impossibile leggere le sandbox. Prova: sbx login"
@@ -183,6 +176,80 @@ function Get-PrivateNetworkDenyResources {
         "fc00::/7",
         "fe80::/10"
     )
+}
+
+function Get-SandboxNetworkDecision {
+    param(
+        [Parameter(Mandatory = $true)][string]$SandboxName,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $Previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $Output = @(& sbx policy check network --sandbox $SandboxName $Target 2>&1)
+        $Code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $Previous }
+
+    $Text = (($Output | ForEach-Object { "$($_)" }) -join "`n").Trim()
+    $Decision = if ($Text -match '(?i)\bAllowed\b') {
+        "allow"
+    }
+    elseif ($Text -match '(?i)\bDenied\b') {
+        "deny"
+    }
+    else {
+        "unknown"
+    }
+
+    return [pscustomobject]@{
+        Code = $Code
+        Decision = $Decision
+        Text = $Text
+    }
+}
+
+function Assert-EffectiveSandboxNetworkPolicy {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName
+    )
+
+    # Validate the EFFECTIVE policy, not merely whether local rule creation returned
+    # success. Docker organization governance can replace local policy completely.
+    $Expected = [ordered]@{
+        "localhost:$($Config.LlamaPort)" = "allow"
+        "localhost:80" = "deny"
+        "localhost:443" = "deny"
+        "localhost:65534" = "deny"
+        "10.0.0.1:80" = "deny"
+        "172.16.0.1:80" = "deny"
+        "192.168.0.1:80" = "deny"
+        "169.254.169.254:80" = "deny"
+    }
+
+    if ($Config.AllowFullWeb) {
+        $Expected["example.com:80"] = "allow"
+        $Expected["example.com:443"] = "allow"
+    }
+    else {
+        foreach ($Target in @($Config.AdditionalNetworkHosts | Where-Object { $_ })) {
+            $Expected[$Target] = "allow"
+        }
+    }
+
+    $Failures = @()
+    foreach ($Target in $Expected.Keys) {
+        $Result = Get-SandboxNetworkDecision -SandboxName $SandboxName -Target $Target
+        if ($Result.Decision -ne $Expected[$Target]) {
+            $Failures += "$Target expected=$($Expected[$Target]) actual=$($Result.Decision) [$($Result.Text)]"
+        }
+    }
+
+    if ($Failures.Count -gt 0) {
+        throw "Policy sandbox effettiva non conforme. OpenCode NON viene avviato. " + ($Failures -join " | ")
+    }
 }
 
 function Write-GeneratedOpenCodeConfig {
@@ -216,9 +283,7 @@ function Write-GeneratedOpenCodeConfig {
         }
         model = "agentbox-llama/$($Config.ModelAlias)"
         permission = [ordered]@{ "*" = "allow" }
-        agent = [ordered]@{
-            title = [ordered]@{ disable = $true }
-        }
+        agent = [ordered]@{ title = [ordered]@{ disable = $true } }
         compaction = [ordered]@{ auto = $true; prune = $true }
         autoupdate = $false
         share = "disabled"
@@ -243,14 +308,9 @@ function Install-SandboxConfiguration {
         throw "LlamaPort non puo essere 80 o 443 nel profilo hardened: quelle porte localhost sono negate esplicitamente. Usa ad esempio 8080."
     }
 
-    # Docker's sandbox proxy evaluates host.docker.internal as host localhost.
-    # This is the only intentional host-service exception.
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "localhost:$($Config.LlamaPort)") | Out-Null
 
     if ($Config.AllowFullWeb) {
-        # Historical setting name: this is broad PUBLIC HTTP/HTTPS (80/443), not
-        # arbitrary outbound ports. `allow **` is intentionally never used because
-        # it also exposed arbitrary host localhost services in empirical tests.
         Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $SandboxName, "**:80,**:443") | Out-Null
     }
     elseif ($Config.AdditionalNetworkHosts.Count -gt 0) {
@@ -263,12 +323,29 @@ function Install-SandboxConfiguration {
     $NetworkDeny = @((Get-PrivateNetworkDenyResources) + @("localhost:80", "localhost:443"))
     Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $SandboxName, ($NetworkDeny -join ",")) | Out-Null
 
+    # Fail closed before starting the agent if the effective policy differs from
+    # the threat model (including when org governance overrides local rules).
+    Assert-EffectiveSandboxNetworkPolicy -Config $Config -SandboxName $SandboxName
+
     $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
 
     Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
     Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
     Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/opencode") | Out-Null
     Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local.json", "/etc/opencode/opencode.json") | Out-Null
+
+    # OpenCode supports Claude Code compatibility by default. Disable it so a host
+    # or project .claude instruction/skills tree cannot silently extend the agent
+    # behavior outside the explicit project/OpenCode configuration model.
+    $PersistentEnv = @"
+set -eu
+FILE=/etc/sandbox-persistent.sh
+for LINE in 'export OPENCODE_DISABLE_CLAUDE_CODE=1' 'export OPENCODE_DISABLE_AUTOUPDATE=1'; do
+  grep -qxF "`$LINE" "`$FILE" 2>/dev/null || printf '%s\n' "`$LINE" | sudo tee -a "`$FILE" >/dev/null
+done
+"@
+    $PersistentEnv = $PersistentEnv.Replace("`r`n", "`n").Replace("`r", "")
+    Invoke-External "sbx" @("exec", $SandboxName, "bash", "-lc", $PersistentEnv) | Out-Null
 }
 
 function Test-LlamaApi {
@@ -277,18 +354,12 @@ function Test-LlamaApi {
     $Client = New-Object System.Net.Sockets.TcpClient
     try {
         $Connect = $Client.BeginConnect("127.0.0.1", $Port, $null, $null)
-        if (-not $Connect.AsyncWaitHandle.WaitOne(3000, $false)) {
-            return $false
-        }
+        if (-not $Connect.AsyncWaitHandle.WaitOne(3000, $false)) { return $false }
         $Client.EndConnect($Connect)
         return $Client.Connected
     }
-    catch {
-        return $false
-    }
-    finally {
-        $Client.Dispose()
-    }
+    catch { return $false }
+    finally { $Client.Dispose() }
 }
 
 function Stop-LlamaProcessTree {
@@ -297,9 +368,7 @@ function Stop-LlamaProcessTree {
         [int]$Port = 8080
     )
 
-    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
-        return
-    }
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return }
 
     Write-Host "Arresto llama-server avviato da questa sessione..." -ForegroundColor Cyan
 
@@ -309,9 +378,7 @@ function Stop-LlamaProcessTree {
         & taskkill.exe /PID $ProcessId /T /F 1>$null 2>$null
         $TaskKillExitCode = $LASTEXITCODE
     }
-    finally {
-        $ErrorActionPreference = $PreviousErrorActionPreference
-    }
+    finally { $ErrorActionPreference = $PreviousErrorActionPreference }
 
     if ($TaskKillExitCode -ne 0 -and (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
         Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
