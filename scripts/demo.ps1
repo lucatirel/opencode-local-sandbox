@@ -9,11 +9,10 @@ Assert-Command "sbx"
 
 $Config = Get-ToolConfig
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$DemoRoot = Join-Path ([Environment]::GetFolderPath("Desktop")) "OCBox-Demo-$Stamp"
+$DemoRoot = Join-Path "C:\Users\Public" "OCBox-Demo-$Stamp"
 $OpenScript = Join-Path $PSScriptRoot "open-project.ps1"
-$ReviewScript = Join-Path $PSScriptRoot "review-project.ps1"
 $StartLlamaScript = Join-Path $PSScriptRoot "start-llama.ps1"
-$Prompt = "Create a file named hello.txt containing exactly: OCBox demo: agent wrote this inside the sandbox. Then show git status. Do not modify README.md."
+$Prompt = "Create hello.txt with exactly this line: OCBox demo: agent wrote this inside the sandbox. Then run git status --short and stop."
 $DemoServer = $null
 $PreflightSandbox = "oc-demo-preflight-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 
@@ -21,7 +20,7 @@ function Start-DemoLlamaHidden {
     param([Parameter(Mandatory = $true)]$Config)
 
     if (Test-LlamaApi -Port ([int]$Config.LlamaPort)) {
-        Write-Host "      PASS: llama-server already running." -ForegroundColor Green
+        Write-Host "      PASS  llama-server already running" -ForegroundColor Green
         return $null
     }
 
@@ -32,15 +31,14 @@ function Start-DemoLlamaHidden {
     $Deadline = (Get-Date).AddSeconds([int]$Config.ServerStartupTimeoutSeconds)
     while ((Get-Date) -lt $Deadline) {
         if (Test-LlamaApi -Port ([int]$Config.LlamaPort)) {
-            Write-Host "      PASS: llama-server ready (hidden)." -ForegroundColor Green
+            Write-Host "      PASS  llama-server ready" -ForegroundColor Green
             return [pscustomobject]@{
                 ProcessId = $Launcher.Id
                 Port      = [int]$Config.LlamaPort
             }
         }
-
         if ($Launcher.HasExited) {
-            throw "llama-server launcher exited before the local API became ready."
+            throw "llama-server exited before the local API became ready."
         }
         Start-Sleep -Seconds 2
     }
@@ -49,14 +47,21 @@ function Start-DemoLlamaHidden {
     throw "llama-server did not become ready within $($Config.ServerStartupTimeoutSeconds) seconds."
 }
 
+function Get-LatestOcboxSnapshotRef {
+    param([Parameter(Mandatory = $true)][string]$ProjectPath)
+
+    $Refs = @(& git -C $ProjectPath for-each-ref --sort=-creatordate --format="%(refname)" "refs/ocbox/*/snapshot")
+    if ($LASTEXITCODE -ne 0) { throw "Could not enumerate OCBox snapshot refs." }
+    return @($Refs | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ }) | Select-Object -First 1
+}
+
 Write-Host ""
-Write-Host "OCBox launch demo" -ForegroundColor Cyan
-Write-Host "All slow/auth-sensitive setup runs BEFORE you start screen recording." -ForegroundColor DarkGray
-Write-Host "The recorded portion stays in this terminal; llama-server runs hidden." -ForegroundColor DarkGray
+Write-Host "OCBox launch demo preflight" -ForegroundColor Cyan
+Write-Host "Everything slow or authentication-sensitive happens before recording." -ForegroundColor DarkGray
 Write-Host ""
 
 New-Item -ItemType Directory -Path $DemoRoot | Out-Null
-"# OCBox Demo`n`nThis file exists on the Windows host before the sandbox starts.`n" | Set-Content -LiteralPath (Join-Path $DemoRoot "README.md") -Encoding UTF8
+"# OCBox Demo`n`nHost baseline file.`n" | Set-Content -LiteralPath (Join-Path $DemoRoot "README.md") -Encoding UTF8
 
 & git -C $DemoRoot init -q
 if ($LASTEXITCODE -ne 0) { throw "Could not initialize demo repository." }
@@ -68,9 +73,7 @@ if ($LASTEXITCODE -ne 0) { throw "Could not create demo baseline commit." }
 $Baseline = (& git -C $DemoRoot rev-parse HEAD).Trim()
 
 try {
-    Write-Host "[1/3] Docker Sandbox preflight" -ForegroundColor Cyan
-    Write-Host "      Verifying Docker login/registry/template access before recording..." -ForegroundColor DarkGray
-
+    Write-Host "[1/2] Docker Sandbox preflight" -ForegroundColor Cyan
     $Previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -84,15 +87,14 @@ try {
     if ($PreflightCode -ne 0) {
         $PreflightText = (($PreflightOut | ForEach-Object { "$($_)" }) -join "`n").Trim()
         $Hint = if ($PreflightText -match '(?i)(token|unauthor|login\.docker\.com|jwks|registry|credential|sign.?in|session)') {
-            "Run 'sbx login', confirm the Docker sign-in succeeds, then rerun '.\sandbox.ps1 demo'. Also verify that login.docker.com is reachable."
+            "Run 'sbx login', confirm Docker sign-in succeeds, then rerun '.\sandbox.ps1 demo'."
         }
         else {
             "Fix the Docker Sandbox error below, then rerun '.\sandbox.ps1 demo'."
         }
         throw "Docker Sandbox preflight failed BEFORE recording.`n$Hint`n`n$PreflightText"
     }
-
-    Write-Host "      PASS: opencode sandbox template can be created." -ForegroundColor Green
+    Write-Host "      PASS  OpenCode sandbox template available" -ForegroundColor Green
 
     $Previous = $ErrorActionPreference
     try {
@@ -102,64 +104,96 @@ try {
     finally {
         $ErrorActionPreference = $Previous
     }
-    Write-Host "      PASS: preflight sandbox removed." -ForegroundColor Green
 
-    Write-Host ""
-    Write-Host "[2/3] Local model preflight" -ForegroundColor Cyan
+    Write-Host "[2/2] Local model preflight" -ForegroundColor Cyan
     $DemoServer = Start-DemoLlamaHidden -Config $Config
 
     try {
         Set-Clipboard -Value $Prompt
-        Write-Host "      PASS: demo prompt copied to clipboard." -ForegroundColor Green
+        Write-Host "      PASS  Prompt copied to clipboard" -ForegroundColor Green
     }
     catch {
-        Write-Host "      WARNING: could not copy prompt automatically." -ForegroundColor Yellow
+        Write-Host "      WARNING  Could not copy prompt automatically" -ForegroundColor Yellow
     }
 
     Write-Host ""
-    Write-Host "[3/3] READY TO RECORD" -ForegroundColor Green
+    Write-Host "READY." -ForegroundColor Green
+    Write-Host "Maximize this terminal and start screen recording now." -ForegroundColor Green
+    Write-Host "After you press ENTER, the screen will clear and the final single-take demo begins." -ForegroundColor DarkGray
+    Write-Host "Keep recording until OCBOX DEMO: PASS appears." -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "DEMO REPOSITORY" -ForegroundColor Cyan
-    Write-Host "  $DemoRoot"
-    Write-Host ""
-    Write-Host "HOST BEFORE" -ForegroundColor Cyan
-    & git -C $DemoRoot status -sb
-    Write-Host "  HEAD: $Baseline" -ForegroundColor DarkGray
-    Write-Host ""
-    Write-Host "PROMPT TO PASTE INTO OPENCODE" -ForegroundColor Cyan
-    Write-Host $Prompt -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "START SCREEN RECORDING NOW." -ForegroundColor Green
-    Write-Host "No model-loading window should appear; llama-server is already ready and hidden." -ForegroundColor DarkGray
-    Write-Host "After ENTER: paste the prompt, let OpenCode finish, then exit OpenCode normally." -ForegroundColor DarkGray
-    Write-Host "Keep recording until you see OCBOX DEMO: PASS." -ForegroundColor DarkGray
-    Write-Host ""
-    Read-Host "Press ENTER to launch the recorded portion" | Out-Null
+    Read-Host "Press ENTER to begin" | Out-Null
 
-    & $OpenScript -ProjectPath $DemoRoot -NoAutoStartServer
-    if (-not $?) {
-        throw "The OCBox demo session did not complete successfully."
+    Clear-Host
+
+    Write-Host "OCBox - autonomous OpenCode, isolated from the Windows host" -ForegroundColor Cyan
+    Write-Host "==========================================================" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "1. HOST BEFORE" -ForegroundColor Cyan
+    Write-Host "   Windows checkout is clean:" -ForegroundColor DarkGray
+    Push-Location $DemoRoot
+    try {
+        Write-Host ""
+        Write-Host "   PS> git status --short" -ForegroundColor White
+        $BeforeStatus = @(& git status --short)
+        if ($LASTEXITCODE -ne 0) { throw "git status failed before the demo." }
+        if ($BeforeStatus.Count -eq 0) {
+            Write-Host "   (clean)" -ForegroundColor Green
+        }
+        else {
+            $BeforeStatus | ForEach-Object { Write-Host "   $_" }
+        }
+        Write-Host ""
+        Write-Host "   PS> ..\..\luca9\Desktop\Git\opencode-local-sandbox\sandbox.ps1 open ." -ForegroundColor White
+    }
+    finally {
+        Pop-Location
     }
 
     Write-Host ""
-    Write-Host "HOST AFTER" -ForegroundColor Cyan
+    Write-Host "2. SANDBOX" -ForegroundColor Cyan
+    & $OpenScript -ProjectPath $DemoRoot -NoAutoStartServer -DemoMode
+    if (-not $?) { throw "The OCBox demo session did not complete successfully." }
+
+    Write-Host ""
+    Write-Host "3. HOST AFTER" -ForegroundColor Cyan
+    Write-Host "   Agent work has been exported, but the Windows checkout is still clean:" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "   PS> git status --short" -ForegroundColor White
+    $AfterStatus = @(& git -C $DemoRoot status --short)
+    if ($LASTEXITCODE -ne 0) { throw "git status failed after the demo." }
+    if ($AfterStatus.Count -eq 0) {
+        Write-Host "   (clean)" -ForegroundColor Green
+    }
+    else {
+        $AfterStatus | ForEach-Object { Write-Host "   $_" }
+    }
+
     $AfterHead = (& git -C $DemoRoot rev-parse HEAD).Trim()
-    & git -C $DemoRoot status -sb
-
     if ($AfterHead -ne $Baseline) {
         throw "DEMO FAIL: host HEAD changed from $Baseline to $AfterHead"
     }
-
     $Porcelain = ((& git -C $DemoRoot status --porcelain) -join "`n").Trim()
     if (-not [string]::IsNullOrWhiteSpace($Porcelain)) {
         throw "DEMO FAIL: host working tree changed:`n$Porcelain"
     }
 
-    Write-Host "  PASS: host HEAD unchanged" -ForegroundColor Green
-    Write-Host "  PASS: host working tree clean" -ForegroundColor Green
     Write-Host ""
-    Write-Host "PRESERVED AGENT OUTPUT" -ForegroundColor Cyan
-    & $ReviewScript -ProjectPath $DemoRoot
+    Write-Host "   PASS  Host HEAD unchanged" -ForegroundColor Green
+    Write-Host "   PASS  Host working tree clean" -ForegroundColor Green
+
+    $Ref = Get-LatestOcboxSnapshotRef -ProjectPath $DemoRoot
+    if ([string]::IsNullOrWhiteSpace($Ref)) {
+        throw "DEMO FAIL: no preserved OCBox snapshot ref found."
+    }
+
+    Write-Host ""
+    Write-Host "4. PRESERVED AGENT OUTPUT" -ForegroundColor Cyan
+    Write-Host "   The change exists only in the passive OCBox snapshot:" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "   PS> git diff HEAD..refs/ocbox/.../snapshot -- hello.txt" -ForegroundColor White
+    & git -C $DemoRoot diff --no-ext-diff --no-textconv HEAD..$Ref -- hello.txt
+    if ($LASTEXITCODE -ne 0) { throw "Could not render preserved demo patch." }
 
     if ($null -ne $DemoServer) {
         Stop-LlamaProcessTree -ProcessId ([int]$DemoServer.ProcessId) -Port ([int]$DemoServer.Port)
@@ -168,9 +202,8 @@ try {
 
     Write-Host ""
     Write-Host "OCBOX DEMO: PASS" -ForegroundColor Green
-    Write-Host "The agent changed the sandbox clone; the Windows host checkout stayed untouched." -ForegroundColor Green
-    Write-Host "STOP SCREEN RECORDING NOW." -ForegroundColor Green
-    Write-Host "Demo repository kept at: $DemoRoot" -ForegroundColor DarkGray
+    Write-Host "Agent autonomy inside. Host checkout untouched outside." -ForegroundColor Green
+    Write-Host "STOP RECORDING." -ForegroundColor Green
 }
 finally {
     $Previous = $ErrorActionPreference
