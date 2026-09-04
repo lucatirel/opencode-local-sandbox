@@ -117,12 +117,23 @@ try {
     Write-Host "[2/3] Probing containment boundaries" -ForegroundColor Cyan
 
     $W = Start-Probe "Credential environment"
-    $R = Run-Sbx $Sandbox @("sh", "-lc", 'for n in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AZURE_CLIENT_SECRET GOOGLE_APPLICATION_CREDENTIALS SSH_AUTH_SOCK; do v="$(printenv "$n" 2>/dev/null || true)"; [ -n "$v" ] && printf "%s\n" "$n"; done')
-    Add-Probe "No high-value host credential environment forwarded" ([string]::IsNullOrWhiteSpace($R.Text)) $(if ($R.Text) { "present variable names: $($R.Text -replace "`n", ', ')" } else { "GitHub/cloud/SSH credential variables absent" }) $W
+    $CredentialScan = "env | grep -E '^(GITHUB_TOKEN|GH_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AZURE_CLIENT_SECRET|GOOGLE_APPLICATION_CREDENTIALS|SSH_AUTH_SOCK)=' | cut -d= -f1 || true"
+    $R = Run-Sbx $Sandbox @("sh", "-lc", $CredentialScan)
+    $CredentialProbeValid = ($R.Code -eq 0) -and ($R.Text -notmatch '(?i)syntax error|usage:|requires at least')
+    $CredentialAbsent = $CredentialProbeValid -and [string]::IsNullOrWhiteSpace($R.Text)
+    Add-Probe "No high-value host credential environment forwarded" $CredentialAbsent $(if (-not $CredentialProbeValid) { "probe execution error: $($R.Text)" } elseif ($R.Text) { "present variable names: $($R.Text -replace "`n", ', ')" } else { "GitHub/cloud/SSH credential variables absent" }) $W
 
     $W = Start-Probe "GitHub CLI authentication"
-    $R = Run-Sbx $Sandbox @("sh", "-lc", 'if command -v gh >/dev/null 2>&1; then gh auth status >/tmp/gh-status 2>&1; c=$?; cat /tmp/gh-status; exit $c; else echo "gh CLI not installed"; exit 1; fi')
-    Add-Probe "GitHub CLI has no authenticated session" ($R.Code -ne 0) $(if ($R.Text) { $R.Text } else { "gh auth status returned unauthenticated" }) $W
+    $GhPresence = Run-Sbx $Sandbox @("sh", "-lc", "command -v gh >/dev/null 2>&1")
+    if ($GhPresence.Code -ne 0) {
+        Add-Probe "GitHub CLI has no authenticated session" $true "gh CLI not installed in sandbox" $W
+    }
+    else {
+        $GhStatus = Run-Sbx $Sandbox @("gh", "auth", "status")
+        $GhProbeValid = ($GhStatus.Text -notmatch '(?i)syntax error|usage:.*sbx|requires at least')
+        $GhUnauthenticated = $GhProbeValid -and ($GhStatus.Code -ne 0)
+        Add-Probe "GitHub CLI has no authenticated session" $GhUnauthenticated $(if (-not $GhProbeValid) { "probe execution error: $($GhStatus.Text)" } elseif ($GhStatus.Text) { $GhStatus.Text } else { "gh auth status returned unauthenticated" }) $W
+    }
 
     $W = Start-Probe "GitHub API identity"
     $R = Run-Sbx $Sandbox @("sh", "-lc", "env -u GITHUB_TOKEN -u GH_TOKEN curl -sS --max-time 10 -o /dev/null -w '%{http_code}' https://api.github.com/user")
