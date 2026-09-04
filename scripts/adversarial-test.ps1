@@ -8,29 +8,58 @@ Assert-Command "sbx"
 Assert-Command "git"
 
 $Results = @()
+$ProbeIndex = 0
+$ProbeTotal = 10
+
+function Start-Probe {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $script:ProbeIndex++
+    Write-Host ("  [{0}/{1}] {2}..." -f $script:ProbeIndex, $script:ProbeTotal, $Name) -ForegroundColor Cyan
+    return [Diagnostics.Stopwatch]::StartNew()
+}
+
 function Add-Probe {
-    param([string]$Name, [bool]$Ok, [string]$Detail)
+    param(
+        [string]$Name,
+        [bool]$Ok,
+        [string]$Detail,
+        [Diagnostics.Stopwatch]$Watch
+    )
+
+    $Seconds = 0.0
+    if ($null -ne $Watch) {
+        $Watch.Stop()
+        $Seconds = $Watch.Elapsed.TotalSeconds
+    }
+
     $script:Results += [pscustomobject]@{
         Result = if ($Ok) { "PASS" } else { "FAIL" }
         Probe = $Name
+        Seconds = [Math]::Round($Seconds, 1)
         Detail = $Detail
     }
+
     $Color = if ($Ok) { "Green" } else { "Red" }
-    Write-Host ("{0}: {1}" -f $(if ($Ok) { "PASS" } else { "FAIL" }), $Name) -ForegroundColor $Color
+    Write-Host ("      {0} in {1:n1}s" -f $(if ($Ok) { "PASS" } else { "FAIL" }), $Seconds) -ForegroundColor $Color
     if (-not [string]::IsNullOrWhiteSpace($Detail)) {
         Write-Host "      $Detail" -ForegroundColor DarkGray
     }
 }
 
 function Run-Sbx {
-    param([string]$Sandbox, [string[]]$Args)
+    param(
+        [Parameter(Mandatory = $true)][string]$Sandbox,
+        [Parameter(Mandatory = $true)][string[]]$CommandArgs
+    )
+
     $Old = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $Out = @(& sbx exec $Sandbox @Args 2>&1)
+        $Out = @(& sbx exec $Sandbox @CommandArgs 2>&1)
         $Code = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $Old }
+
     [pscustomobject]@{
         Code = $Code
         Text = (($Out | ForEach-Object { "$($_)" }) -join "`n").Trim()
@@ -87,21 +116,27 @@ try {
     Write-Host ""
     Write-Host "[2/3] Probing containment boundaries" -ForegroundColor Cyan
 
-    $R = Run-Sbx $Sandbox @("sh", "-lc", 'for n in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AZURE_CLIENT_SECRET GOOGLE_APPLICATION_CREDENTIALS SSH_AUTH_SOCK; do eval "v=\${$n:-}"; [ -n "$v" ] && printf "%s\n" "$n"; done')
-    Add-Probe "No high-value host credential environment forwarded" ([string]::IsNullOrWhiteSpace($R.Text)) $(if ($R.Text) { "present variable names: $($R.Text -replace "`n", ', ')" } else { "GitHub/cloud/SSH credential variables absent" })
+    $W = Start-Probe "Credential environment"
+    $R = Run-Sbx $Sandbox @("sh", "-lc", 'for n in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AZURE_CLIENT_SECRET GOOGLE_APPLICATION_CREDENTIALS SSH_AUTH_SOCK; do v="$(printenv "$n" 2>/dev/null || true)"; [ -n "$v" ] && printf "%s\n" "$n"; done')
+    Add-Probe "No high-value host credential environment forwarded" ([string]::IsNullOrWhiteSpace($R.Text)) $(if ($R.Text) { "present variable names: $($R.Text -replace "`n", ', ')" } else { "GitHub/cloud/SSH credential variables absent" }) $W
 
+    $W = Start-Probe "GitHub CLI authentication"
     $R = Run-Sbx $Sandbox @("sh", "-lc", 'if command -v gh >/dev/null 2>&1; then gh auth status >/tmp/gh-status 2>&1; c=$?; cat /tmp/gh-status; exit $c; else echo "gh CLI not installed"; exit 1; fi')
-    Add-Probe "GitHub CLI has no authenticated session" ($R.Code -ne 0) $(if ($R.Text) { $R.Text } else { "gh auth status returned unauthenticated" })
+    Add-Probe "GitHub CLI has no authenticated session" ($R.Code -ne 0) $(if ($R.Text) { $R.Text } else { "gh auth status returned unauthenticated" }) $W
 
+    $W = Start-Probe "GitHub API identity"
     $R = Run-Sbx $Sandbox @("sh", "-lc", "env -u GITHUB_TOKEN -u GH_TOKEN curl -sS --max-time 10 -o /dev/null -w '%{http_code}' https://api.github.com/user")
-    Add-Probe "GitHub API sees sandbox as anonymous" (($R.Code -eq 0) -and ($R.Text -eq "401")) "HTTP $($R.Text) from /user (expected 401)"
+    Add-Probe "GitHub API sees sandbox as anonymous" (($R.Code -eq 0) -and ($R.Text -eq "401")) "HTTP $($R.Text) from /user (expected 401)" $W
 
+    $W = Start-Probe "Common credential files"
     $R = Run-Sbx $Sandbox @("sh", "-lc", 'for p in "$HOME/.git-credentials" "$HOME/.config/gh/hosts.yml" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ed25519" "$HOME/.aws/credentials"; do [ -e "$p" ] && printf "%s\n" "$p"; done')
-    Add-Probe "Common credential files absent" ([string]::IsNullOrWhiteSpace($R.Text)) $(if ($R.Text) { "found: $($R.Text -replace "`n", ', ')" } else { "no GitHub/Git/SSH/AWS credential files found" })
+    Add-Probe "Common credential files absent" ([string]::IsNullOrWhiteSpace($R.Text)) $(if ($R.Text) { "found: $($R.Text -replace "`n", ', ')" } else { "no GitHub/Git/SSH/AWS credential files found" }) $W
 
+    $W = Start-Probe "Read-only host source mount"
     $R = Run-Sbx $Sandbox @("sh", "-lc", 'touch /run/sandbox/source/OCBOX_ADVERSARIAL_WRITE 2>/dev/null')
-    Add-Probe "Host source mount remains read-only" ($R.Code -ne 0) "write exit=$($R.Code)"
+    Add-Probe "Host source mount remains read-only" ($R.Code -ne 0) "write exit=$($R.Code)" $W
 
+    $W = Start-Probe "Arbitrary host-file paths"
     $Full = [IO.Path]::GetFullPath($Canary)
     $Candidates = @()
     if ($Full -match '^([A-Za-z]):\\(.*)$') {
@@ -115,16 +150,19 @@ try {
         $R = Run-Sbx $Sandbox @("sh", "-lc", "cat '$Candidate' 2>/dev/null")
         if (($R.Code -eq 0) -and ($R.Text -eq $CanaryValue)) { $Leak = $true; $LeakAt = $Candidate; break }
     }
-    Add-Probe "Arbitrary host file canary inaccessible" (-not $Leak) $(if ($Leak) { "LEAK at $LeakAt" } else { "host-only canary could not be read" })
+    Add-Probe "Arbitrary host file canary inaccessible" (-not $Leak) $(if ($Leak) { "LEAK at $LeakAt" } else { "host-only canary could not be read" }) $W
 
+    $W = Start-Probe "Private/LAN/metadata network policy"
     $PrivateTargets = @("10.0.0.1:80", "172.16.0.1:80", "192.168.1.1:80", "169.254.169.254:80")
     $Bad = @($PrivateTargets | Where-Object { (Policy-Decision $Sandbox $_) -ne "deny" })
-    Add-Probe "Private/LAN/metadata routes remain denied" ($Bad.Count -eq 0) $(if ($Bad.Count) { "not denied: $($Bad -join ', ')" } else { "all representative targets denied" })
+    Add-Probe "Private/LAN/metadata routes remain denied" ($Bad.Count -eq 0) $(if ($Bad.Count) { "not denied: $($Bad -join ', ')" } else { "all representative targets denied" }) $W
 
-    $R = Run-Sbx $Sandbox @("sh", "-lc", 'docker info >/dev/null 2>&1 && docker volume create ' + $HostDockerMarker)
+    $W = Start-Probe "Sandbox-private Docker Engine"
+    $R = Run-Sbx $Sandbox @("sh", "-lc", ("docker info >/dev/null 2>&1 && docker volume create {0}" -f $HostDockerMarker))
     $InnerDocker = ($R.Code -eq 0)
-    Add-Probe "Private Docker Engine is available" $InnerDocker $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
+    Add-Probe "Private Docker Engine is available" $InnerDocker $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" }) $W
 
+    $W = Start-Probe "Inner Docker separation from host Docker"
     if ($InnerDocker) {
         $Old = $ErrorActionPreference
         try {
@@ -141,18 +179,22 @@ try {
                 $Seen = @(& docker volume ls -q --filter "name=$HostDockerMarker" 2>$null | Where-Object { "$($_)".Trim() -eq $HostDockerMarker }).Count -gt 0
             }
             finally { $ErrorActionPreference = $Old }
-            Add-Probe "Inner Docker cannot mutate host Docker" (-not $Seen) $(if ($Seen) { "host Docker saw inner marker volume" } else { "inner marker absent from host Docker" })
+            Add-Probe "Inner Docker cannot mutate host Docker" (-not $Seen) $(if ($Seen) { "host Docker saw inner marker volume" } else { "inner marker absent from host Docker" }) $W
         }
         else {
-            Add-Probe "Inner Docker cannot mutate host Docker" $true "host Docker daemon unavailable; inner engine still worked independently"
+            Add-Probe "Inner Docker cannot mutate host Docker" $true "host Docker daemon unavailable; inner engine still worked independently" $W
         }
         $null = Run-Sbx $Sandbox @("sh", "-lc", "docker volume rm -f $HostDockerMarker >/dev/null 2>&1")
+    }
+    else {
+        Add-Probe "Inner Docker cannot mutate host Docker" $false "not testable because the sandbox-private Docker Engine was unavailable" $W
     }
 
     Write-Host ""
     Write-Host "[3/3] Verifying host state" -ForegroundColor Cyan
+    $W = Start-Probe "Host canary integrity"
     $HostCanaryStillValid = (Test-Path -LiteralPath $Canary) -and ((Get-Content -LiteralPath $Canary -Raw).Trim() -eq $CanaryValue)
-    Add-Probe "Host canary unchanged" $HostCanaryStillValid "host-only sentinel preserved"
+    Add-Probe "Host canary unchanged" $HostCanaryStillValid "host-only sentinel preserved" $W
 }
 finally {
     Write-Host ""
@@ -173,6 +215,6 @@ if ($Failures.Count -eq 0) {
 }
 else {
     Write-Host "ADVERSARIAL CONTAINMENT: FAIL ($($Failures.Count) failure/i)" -ForegroundColor Red
-    $Failures | Format-Table -AutoSize -Wrap
+    $Failures | Format-Table Result, Probe, Seconds, Detail -AutoSize -Wrap
     throw "One or more adversarial containment probes failed."
 }
