@@ -5,7 +5,8 @@ param(
 
     [string]$SandboxName,
     [switch]$NoAttach,
-    [switch]$NoAutoStartServer
+    [switch]$NoAutoStartServer,
+    [switch]$DemoMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,7 +40,7 @@ if ($Config.DisableSshAgentForwarding) {
 try {
     if (-not $ServerWasAlreadyRunning) {
         if ($NoAutoStartServer) {
-            Write-Warning "llama-server non risponde. Avvialo con: .\sandbox.ps1 server"
+            Write-Warning "llama-server is not responding. Start it with: .\sandbox.ps1 server"
         }
         else {
             $ServerLauncher = Start-LlamaWindowAndWait -Config $Config
@@ -48,8 +49,15 @@ try {
 
     $Existing = @(Get-SandboxNames)
     if ($Existing -notcontains $SandboxName) {
-        Write-Host "Creazione sandbox hardened $SandboxName..." -ForegroundColor Cyan
-        Write-Host "Host repo read-only; lavoro in clone privato della microVM." -ForegroundColor DarkGray
+        if ($DemoMode) {
+            Write-Host "Creating disposable Docker Sandbox microVM..." -ForegroundColor Cyan
+            Write-Host "  Host checkout: read-only" -ForegroundColor DarkGray
+            Write-Host "  Agent workspace: private Git clone" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "Creating hardened sandbox $SandboxName..." -ForegroundColor Cyan
+            Write-Host "Host repository is read-only; agent work happens in a private microVM clone." -ForegroundColor DarkGray
+        }
 
         $CreateArgs = @(
             "create",
@@ -66,76 +74,126 @@ try {
         $CreateArgs += @("opencode", $ProjectPath)
 
         $CreateStarted = Get-Date
-        Invoke-External "sbx" $CreateArgs
+        if ($DemoMode) {
+            $Previous = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                $CreateOutput = @(& sbx @CreateArgs 2>&1)
+                $CreateCode = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $Previous
+            }
+            if ($CreateCode -ne 0) {
+                throw "Sandbox creation failed (exit $CreateCode): $((($CreateOutput | ForEach-Object { \"$($_)\" }) -join \"`n\").Trim())"
+            }
+        }
+        else {
+            Invoke-External "sbx" $CreateArgs
+        }
         $Elapsed = (Get-Date) - $CreateStarted
-        Write-Host ("Sandbox creata in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
+        Write-Host ("Sandbox ready in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
     }
     else {
-        Write-Host "Sandbox esistente: $SandboxName" -ForegroundColor Yellow
+        if ($DemoMode) {
+            Write-Host "Disposable sandbox ready." -ForegroundColor Green
+        }
+        else {
+            Write-Host "Existing sandbox: $SandboxName" -ForegroundColor Yellow
+        }
     }
 
-    Write-Host "Applico public-web 80/443, endpoint llama isolato e configurazione OpenCode no-approval..." -ForegroundColor Cyan
+    if (-not $DemoMode) {
+        Write-Host "Applying public-web 80/443 policy, isolated llama endpoint, and no-approval OpenCode config..." -ForegroundColor Cyan
+    }
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
 
     Write-Host ""
-    Write-Host "Progetto host: $ProjectPath" -ForegroundColor Green
-    Write-Host "Sandbox: $SandboxName" -ForegroundColor Green
-    if ($Config.UseCloneMode) {
-        Write-Host "Modalita: CLONE - repo host read-only; modifiche nella copia privata." -ForegroundColor Green
-    }
-    if ($Config.AllowFullWeb) {
-        Write-Host "Rete: HTTP/HTTPS pubblico su 80/443; LAN/private e servizi host non autorizzati bloccati." -ForegroundColor Green
-    }
-    Write-Host "OpenCode: nessun approval prompt dentro la microVM." -ForegroundColor Green
-    if ($Config.DestroyWorkSandboxOnExit) {
-        Write-Host "Lifecycle: snapshot Git -> bundle verificato -> refs/ocbox/* -> distruzione microVM." -ForegroundColor Green
+    if ($DemoMode) {
+        Write-Host "SANDBOX READY" -ForegroundColor Green
+        Write-Host "  OpenCode: full permissions inside the microVM" -ForegroundColor Green
+        Write-Host "  Public web: allowed on 80/443" -ForegroundColor Green
+        Write-Host "  Host/LAN/credentials: outside the default trust boundary" -ForegroundColor Green
+        Write-Host ""
     }
     else {
-        Write-Host "Lifecycle: sandbox mantenuta dopo l'uscita." -ForegroundColor Yellow
+        Write-Host "Host project: $ProjectPath" -ForegroundColor Green
+        Write-Host "Sandbox: $SandboxName" -ForegroundColor Green
+        if ($Config.UseCloneMode) {
+            Write-Host "Mode: CLONE - host repository read-only; changes stay in the private clone." -ForegroundColor Green
+        }
+        if ($Config.AllowFullWeb) {
+            Write-Host "Network: public HTTP/HTTPS on 80/443; private/LAN and unauthorized host services denied." -ForegroundColor Green
+        }
+        Write-Host "OpenCode: no approval prompts inside the microVM." -ForegroundColor Green
+        if ($Config.DestroyWorkSandboxOnExit) {
+            Write-Host "Lifecycle: Git snapshot -> verified bundle -> refs/ocbox/* -> destroy microVM." -ForegroundColor Green
+        }
+        else {
+            Write-Host "Lifecycle: sandbox is preserved after exit." -ForegroundColor Yellow
+        }
+        Write-Host ""
     }
-    Write-Host ""
 
     if (-not $NoAttach) {
         Set-Location -LiteralPath $ProjectPath
         & sbx run --name $SandboxName
         if ($LASTEXITCODE -ne 0) {
-            throw "OpenCode/sbx terminato con exit code $LASTEXITCODE."
+            throw "OpenCode/sbx exited with code $LASTEXITCODE."
         }
 
         if ($Config.DestroyWorkSandboxOnExit) {
             if (-not $Config.UseCloneMode) {
-                throw "Distruzione automatica richiede clone mode. Sandbox conservata."
+                throw "Automatic destruction requires clone mode. Sandbox preserved."
             }
 
             $HostHeadBeforeHandoff = (& git -C $ProjectPath rev-parse HEAD).Trim().ToLowerInvariant()
             if ($LASTEXITCODE -ne 0) {
-                throw "Impossibile leggere HEAD host prima dell'handoff. Sandbox conservata."
+                throw "Could not read host HEAD before handoff. Sandbox preserved."
             }
 
             $SessionId = Get-HandoffSessionId
-            Write-Host "Preservo il lavoro prima di distruggere la microVM..." -ForegroundColor Cyan
+            if ($DemoMode) {
+                Write-Host ""
+                Write-Host "AGENT EXITED - VERIFYING GIT-ONLY HANDOFF" -ForegroundColor Cyan
+            }
+            else {
+                Write-Host "Preserving agent work before destroying the microVM..." -ForegroundColor Cyan
+            }
             $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
 
             if ($Snapshot.IgnoredCount -gt 0) {
-                Write-Warning "Trovati $($Snapshot.IgnoredCount) file ignored/untracked nel clone. Il Git handoff non li include: sandbox conservata per evitare perdita dati."
+                Write-Warning "Found $($Snapshot.IgnoredCount) ignored/untracked files that Git handoff cannot preserve automatically. Sandbox kept alive to avoid data loss."
             }
             else {
                 $Handoff = Export-SandboxGitHandoff -ProjectPath $ProjectPath -SandboxName $SandboxName -SessionId $SessionId -Snapshot $Snapshot
                 $HasChanges = ($Handoff.SnapshotSha -ne $HostHeadBeforeHandoff)
 
                 if ($HasChanges) {
-                    Write-Host "Snapshot con modifiche verificato sul host: $($Handoff.SnapshotRef)" -ForegroundColor Green
-                    Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
+                    if ($DemoMode) {
+                        Write-Host "  PASS  Snapshot exported as a verified Git bundle" -ForegroundColor Green
+                        Write-Host "  PASS  Imported only into passive $($Handoff.SnapshotRef)" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Host "Verified changed snapshot on host: $($Handoff.SnapshotRef)" -ForegroundColor Green
+                        Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
+                    }
                 }
                 else {
-                    Write-Host "Nessuna modifica prodotta dall'agente in questa sessione." -ForegroundColor Yellow
-                    Write-Host "Snapshot verificato: $($Handoff.SnapshotRef)" -ForegroundColor DarkGray
+                    Write-Host "No agent changes were produced in this session." -ForegroundColor Yellow
+                    Write-Host "Verified snapshot: $($Handoff.SnapshotRef)" -ForegroundColor DarkGray
                 }
 
                 Remove-SandboxAfterHandoff -SandboxName $SandboxName -ProjectPath $ProjectPath -Handoff $Handoff
-                Write-Host "MicroVM distrutta. Il working tree host non e stato modificato." -ForegroundColor Green
-                if ($HasChanges) {
-                    Write-Host "Review sicura: .\sandbox.ps1 review `"$ProjectPath`"" -ForegroundColor Cyan
+                if ($DemoMode) {
+                    Write-Host "  PASS  Disposable microVM destroyed" -ForegroundColor Green
+                    Write-Host "  PASS  Host checkout was never modified" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "MicroVM destroyed. Host working tree was not modified." -ForegroundColor Green
+                    if ($HasChanges) {
+                        Write-Host "Safe review: .\sandbox.ps1 review `"$ProjectPath`"" -ForegroundColor Cyan
+                    }
                 }
             }
         }
