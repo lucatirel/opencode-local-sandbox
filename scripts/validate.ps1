@@ -15,11 +15,44 @@ function Invoke-ValidationStep {
     Write-Host "==> $Name" -ForegroundColor Cyan
     if ($SlowIntegration) {
         Write-Host "    This step creates a disposable Docker Sandbox microVM." -ForegroundColor DarkGray
-        Write-Host "    sbx create may stay quiet for a while; this is expected." -ForegroundColor DarkGray
+        Write-Host "    Long sbx operations may be quiet; OCBox will print a heartbeat every 30s." -ForegroundColor DarkGray
     }
 
     $Started = Get-Date
-    & $Action
+
+    if (-not $SlowIntegration) {
+        & $Action
+    }
+    else {
+        $Job = Start-Job -ScriptBlock {
+            param($SerializedAction, $WorkingDirectory)
+            Set-Location -LiteralPath $WorkingDirectory
+            $Block = [ScriptBlock]::Create($SerializedAction)
+            & $Block
+        } -ArgumentList $Action.ToString(), (Get-Location).Path
+
+        try {
+            while ($Job.State -eq "Running") {
+                $null = Wait-Job -Job $Job -Timeout 30
+                Receive-Job -Job $Job
+                if ($Job.State -eq "Running") {
+                    $ElapsedNow = (Get-Date) - $Started
+                    Write-Host ("    ...still running ({0:n0}s elapsed)" -f $ElapsedNow.TotalSeconds) -ForegroundColor DarkGray
+                }
+            }
+
+            Receive-Job -Job $Job
+            if ($Job.State -ne "Completed") {
+                $Reason = $Job.ChildJobs[0].JobStateInfo.Reason
+                if ($null -ne $Reason) { throw $Reason }
+                throw "$Name failed in background job state: $($Job.State)"
+            }
+        }
+        finally {
+            Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $Elapsed = (Get-Date) - $Started
     Write-Host ("PASS: {0} ({1:n1}s)" -f $Name, $Elapsed.TotalSeconds) -ForegroundColor Green
 }
@@ -61,12 +94,14 @@ Invoke-ValidationStep "Dependency-free functional tests" {
     & (Join-Path $ToolRoot "tests\static-tests.ps1")
 }
 
+$SecurityTest = Join-Path $PSScriptRoot "security-test.ps1"
 Invoke-ValidationStep "Host isolation" -SlowIntegration {
-    & (Join-Path $PSScriptRoot "security-test.ps1")
+    & $SecurityTest
 }
 
+$HandoffTest = Join-Path $PSScriptRoot "handoff-test.ps1"
 Invoke-ValidationStep "Disposable Git handoff" -SlowIntegration {
-    & (Join-Path $PSScriptRoot "handoff-test.ps1")
+    & $HandoffTest
 }
 
 Write-Host ""
