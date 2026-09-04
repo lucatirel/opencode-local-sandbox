@@ -30,7 +30,11 @@ function Add-Warning {
 }
 
 function Invoke-GitText {
-    param([string[]]$ArgumentList)
+    param(
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [switch]$AllowFailure
+    )
+
     $Old = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -39,11 +43,21 @@ function Invoke-GitText {
     }
     finally { $ErrorActionPreference = $Old }
 
-    if ($Code -ne 0) {
-        throw "git $($ArgumentList -join ' ') failed: $((($Out | ForEach-Object { \"$($_)\" }) -join \"`n\").Trim())"
+    $Text = (($Out | ForEach-Object { "$($_)" }) -join "`n").Trim()
+
+    if (($Code -ne 0) -and (-not $AllowFailure)) {
+        throw "git $($ArgumentList -join ' ') failed (exit $Code): $Text"
     }
 
-    return (($Out | ForEach-Object { "$($_)" }) -join "`n").Trim()
+    [pscustomobject]@{
+        Code = $Code
+        Text = $Text
+    }
+}
+
+function Get-GitText {
+    param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
+    return (Invoke-GitText -ArgumentList $ArgumentList).Text
 }
 
 Write-Host ""
@@ -53,12 +67,12 @@ Write-Host "Secret values are never printed; findings show only category, path a
 Write-Host ""
 
 Write-Host "[1/6] Repository state" -ForegroundColor Cyan
-$CurrentBranch = Invoke-GitText @("branch", "--show-current")
+$CurrentBranch = Get-GitText @("branch", "--show-current")
 if ($CurrentBranch -ne "main") {
     Add-Finding "Repository state" "-" "current branch is '$CurrentBranch', expected 'main'"
 }
 
-$Status = Invoke-GitText @("status", "--porcelain")
+$Status = Get-GitText @("status", "--porcelain")
 if (-not [string]::IsNullOrWhiteSpace($Status)) {
     Add-Finding "Repository state" "-" "working tree is not clean"
 }
@@ -67,7 +81,7 @@ else {
 }
 
 Write-Host "[2/6] Branch surface" -ForegroundColor Cyan
-$RemoteBranchesText = Invoke-GitText @("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
+$RemoteBranchesText = Get-GitText @("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
 $RemoteBranches = @($RemoteBranchesText -split "`r?`n" | Where-Object { $_ -and $_ -ne "origin/HEAD" })
 $UnexpectedRemote = @($RemoteBranches | Where-Object { $_ -ne "origin/main" })
 if ($UnexpectedRemote.Count -gt 0) {
@@ -77,7 +91,7 @@ else {
     Write-Host "      PASS: origin exposes only main" -ForegroundColor Green
 }
 
-$LocalBranchesText = Invoke-GitText @("for-each-ref", "--format=%(refname:short)", "refs/heads")
+$LocalBranchesText = Get-GitText @("for-each-ref", "--format=%(refname:short)", "refs/heads")
 $LocalBranches = @($LocalBranchesText -split "`r?`n" | Where-Object { $_ })
 $UnexpectedLocal = @($LocalBranches | Where-Object { $_ -ne "main" })
 if ($UnexpectedLocal.Count -gt 0) {
@@ -88,7 +102,7 @@ else {
 }
 
 Write-Host "[3/6] Historical file names" -ForegroundColor Cyan
-$ObjectLines = @(Invoke-GitText @("rev-list", "--objects", "main") -split "`r?`n")
+$ObjectLines = @(Get-GitText @("rev-list", "--objects", "main") -split "`r?`n")
 $BlobRecords = @{}
 $SuspiciousPathPattern = '(?i)(^|/)(\.env($|\.)|config\.local\.ps1$|credentials($|\.)|secrets?($|\.)|id_(rsa|ed25519|ecdsa|dsa)$|[^/]+\.(pem|key|p12|pfx|kdbx)$|hosts\.yml$)'
 $BinaryExtensions = @(".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".7z", ".gz", ".tar", ".exe", ".dll", ".so", ".bin", ".gguf", ".onnx", ".pt", ".pth")
@@ -101,7 +115,7 @@ foreach ($Line in $ObjectLines) {
     $Sha = $Parts[0]
     $Path = $Parts[1]
 
-    $Type = Invoke-GitText @("cat-file", "-t", $Sha)
+    $Type = Get-GitText @("cat-file", "-t", $Sha)
     if ($Type -ne "blob") { continue }
 
     $Key = "$Sha|$Path"
@@ -138,7 +152,7 @@ foreach ($Record in $BlobRecords.Values) {
     $Ext = [IO.Path]::GetExtension($Path).ToLowerInvariant()
     if ($BinaryExtensions -contains $Ext) { continue }
 
-    $SizeText = Invoke-GitText @("cat-file", "-s", $Sha)
+    $SizeText = Get-GitText @("cat-file", "-s", $Sha)
     $Size = 0L
     if (-not [Int64]::TryParse($SizeText, [ref]$Size)) { continue }
 
@@ -147,7 +161,7 @@ foreach ($Record in $BlobRecords.Values) {
     }
     if ($Size -gt 2097152) { continue }
 
-    $Content = Invoke-GitText @("cat-file", "blob", $Sha)
+    $Content = Get-GitText @("cat-file", "blob", $Sha)
     foreach ($Pattern in $HardPatterns) {
         if ($Content -match $Pattern.Regex) {
             Add-Finding "Secret signature: $($Pattern.Name)" $Path "reachable blob $Sha"
@@ -178,8 +192,8 @@ foreach ($Name in $Required) {
     }
 }
 
-$IgnoredLocal = Invoke-GitText @("check-ignore", "config.local.ps1")
-if ($IgnoredLocal -ne "config.local.ps1") {
+$IgnoreProbe = Invoke-GitText -ArgumentList @("check-ignore", "config.local.ps1") -AllowFailure
+if (($IgnoreProbe.Code -ne 0) -or ($IgnoreProbe.Text -ne "config.local.ps1")) {
     Add-Finding "Ignore policy" "config.local.ps1" "machine-local config is not ignored"
 }
 else {
