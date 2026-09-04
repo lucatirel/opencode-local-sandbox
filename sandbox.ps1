@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("help", "bootstrap", "doctor", "validate", "cleanup", "server", "new", "open", "review", "handoff", "security-test", "handoff-test", "adversarial-test", "prepublish-audit")]
+    [ValidateSet("help", "bootstrap", "doctor", "validate", "cleanup", "server", "new", "open", "review", "handoff", "security-test", "handoff-test", "adversarial-test", "prepublish-audit", "demo")]
     [string]$Command = "help",
 
     [Parameter(Position = 1)]
@@ -21,6 +21,7 @@ switch ($Command) {
     "handoff-test" { & (Join-Path $Scripts "handoff-test.ps1") }
     "adversarial-test" { & (Join-Path $Scripts "adversarial-test.ps1") }
     "prepublish-audit" { & (Join-Path $Scripts "prepublish-audit.ps1") }
+    "demo" { & (Join-Path $Scripts "demo.ps1") }
     "handoff" {
         if ([string]::IsNullOrWhiteSpace($Target)) { $Target = Read-Host "Full path of the project to recover" }
         & (Join-Path $Scripts "handoff-project.ps1") -ProjectPath $Target
@@ -49,6 +50,7 @@ switch ($Command) {
         Write-Host "  .\sandbox.ps1 handoff-test              verify disposable Git handoff"
         Write-Host "  .\sandbox.ps1 adversarial-test          run controlled containment probes"
         Write-Host "  .\sandbox.ps1 prepublish-audit          audit reachable Git history before publication"
+        Write-Host "  .\sandbox.ps1 demo                      run the reproducible launch demo"
         Write-Host "  .\sandbox.ps1 open C:\Projects\app      run OpenCode in a disposable clone"
         Write-Host "  .\sandbox.ps1 review C:\Projects\app    inspect the latest agent snapshot safely"
         Write-Host "  .\sandbox.ps1 handoff C:\Projects\app   recover a preserved sandbox"
