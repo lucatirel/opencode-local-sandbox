@@ -82,7 +82,10 @@ else {
 
 Write-Host "[2/6] Branch surface" -ForegroundColor Cyan
 $RemoteBranchesText = Get-GitText @("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
-$RemoteBranches = @($RemoteBranchesText -split "`r?`n" | Where-Object { $_ -and $_ -ne "origin/HEAD" })
+$RemoteBranches = @(
+    $RemoteBranchesText -split "`r?`n" |
+        Where-Object { $_ -and $_ -notin @("origin", "origin/HEAD") }
+)
 $UnexpectedRemote = @($RemoteBranches | Where-Object { $_ -ne "origin/main" })
 if ($UnexpectedRemote.Count -gt 0) {
     Add-Finding "Branch surface" "-" ("unexpected remote branch(es): " + ($UnexpectedRemote -join ", "))
@@ -169,8 +172,13 @@ foreach ($Record in $BlobRecords.Values) {
         }
     }
 
-    if ($Content -match '(?i)C:\\Users\\[^\\\s]+\\') {
-        Add-Warning "Personal absolute path" $Path "reachable blob $Sha contains a C:\\Users\\... path"
+    $PersonalMatches = [regex]::Matches($Content, '(?i)C:\\Users\\([^\\\s]+)\\')
+    foreach ($Match in $PersonalMatches) {
+        $UserPart = $Match.Groups[1].Value
+        if ($UserPart -notmatch '^(nome|user|username|utente|example|sample|test)$') {
+            Add-Warning "Personal absolute path" $Path "reachable blob $Sha contains a non-placeholder C:\\Users\\... path"
+            break
+        }
     }
 
     $Scanned++
