@@ -1,9 +1,12 @@
-# Defaults are loaded first; config.local.ps1 overrides only machine-specific values.
+# Versioned defaults. Machine-specific settings belong in config.local.ps1.
+#
+# llama.cpp and model weights are external dependencies. OCBox does not download,
+# build, vendor or tune them automatically.
 
 $LlamaRoot = "C:\path\to\llama.cpp"
-$ModelFile = "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf"
-$ModelAlias = "qwen36-35b-q3"
-$ModelDisplayName = "Qwen3.6 35B A3B Q3"
+$ModelFile = "model.gguf"
+$ModelAlias = "local-model"
+$ModelDisplayName = "Local GGUF model"
 
 $ProjectsRoot = Join-Path $env:USERPROFILE "Projects"
 $SandboxPrefix = "oc"
@@ -11,17 +14,17 @@ $SandboxMemory = "6g"
 $SandboxCpus = 6
 
 # Hardened agent profile.
-# The agent gets full privileges and unrestricted HTTP/HTTPS inside the microVM,
-# while the host repository is exposed read-only and work happens in a private clone.
+# The agent gets broad privileges inside the microVM while the host repository is
+# not its writable working copy.
 $UseCloneMode = $true
 $AllowFullWeb = $true
 $DisableSharedSkills = $true
 $DisableSshAgentForwarding = $true
 
 # Verified lifecycle: after OpenCode exits normally, snapshot the private clone,
-# fetch it into passive refs/ocbox/* refs on the host, verify host HEAD/status are
-# unchanged, and only then destroy the work sandbox. Any preservation failure keeps
-# the sandbox alive instead of risking data loss.
+# import it into passive refs/ocbox/* refs on the host, verify host HEAD/status are
+# unchanged, and only then destroy the work sandbox. Preservation uncertainty
+# intentionally keeps the sandbox alive.
 $DestroyWorkSandboxOnExit = $true
 
 $LlamaPort = 8080
@@ -29,7 +32,10 @@ $ContextSize = 16384
 $OutputTokens = 2048
 $ServerStartupTimeoutSeconds = 120
 
-# Tuned preset for RTX 4070 Laptop 8 GB + 16 GB system RAM.
+# Reference llama.cpp launch preset.
+# These values are hardware/model specific and are NOT part of OCBox's security
+# model. Override them in config.local.ps1 when your llama.cpp/model setup needs
+# different tuning.
 $LoadMode = "mmap"
 $CpuMoeLayers = 26
 $GpuLayers = "all"

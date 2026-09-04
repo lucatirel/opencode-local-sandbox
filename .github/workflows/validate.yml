@@ -1,12 +1,13 @@
-name: Validate template
+name: Validate
 
 on:
   push:
   pull_request:
 
 jobs:
-  powershell-and-json:
+  static:
     runs-on: windows-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +24,9 @@ jobs:
               [ref]$errors
             )
             if ($errors) {
-              $allErrors += $errors | ForEach-Object { "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+              $allErrors += $errors | ForEach-Object {
+                "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)"
+              }
             }
           }
           if ($allErrors) {
@@ -39,6 +42,16 @@ jobs:
             Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json | Out-Null
           }
 
-      - name: Run dependency-free functional tests
+      - name: Run functional tests on Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\static-tests.ps1
+
+      - name: Run functional tests on PowerShell 7
         shell: pwsh
         run: .\tests\static-tests.ps1
+
+      - name: Integration-test notice
+        shell: pwsh
+        run: |
+          Write-Host "Docker Sandbox integration tests are intentionally local-only."
+          Write-Host "Run .\sandbox.ps1 validate on a Windows machine with sbx configured."
