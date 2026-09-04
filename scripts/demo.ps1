@@ -144,7 +144,7 @@ try {
             $BeforeStatus | ForEach-Object { Write-Host "   $_" }
         }
         Write-Host ""
-        Write-Host "   PS> ..\..\luca9\Desktop\Git\opencode-local-sandbox\sandbox.ps1 open ." -ForegroundColor White
+        Write-Host "   PS> .\sandbox.ps1 open C:\Users\Public\OCBox-Demo" -ForegroundColor White
     }
     finally {
         Pop-Location
