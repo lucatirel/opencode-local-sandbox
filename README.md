@@ -1,153 +1,111 @@
 # OCBox — OpenCode Local Sandbox
 
-> Give a local coding agent broad freedom. Treat everything inside its workspace as potentially hostile.
+[![Validate](https://github.com/lucatirel/opencode-local-sandbox/actions/workflows/validate.yml/badge.svg)](https://github.com/lucatirel/opencode-local-sandbox/actions/workflows/validate.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](#requirements)
+[![Docker Sandboxes](https://img.shields.io/badge/Docker%20Sandboxes-sbx-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/ai/sandboxes/)
+[![OpenCode](https://img.shields.io/badge/agent-OpenCode-111111)](https://opencode.ai/)
 
-OCBox is a Windows-first harness for running **OpenCode** inside a disposable **Docker Sandbox microVM**, backed by a **local llama.cpp server** on the Windows host.
+**Run OpenCode with a local LLM in a disposable microVM — full agent autonomy inside, Git-only handoff out.**
 
-The agent is intentionally powerful inside the sandbox: it can edit files, run shell commands, install packages, use `sudo`, build software, access public HTTP/HTTPS, and use a private Docker Engine. The Windows host is the asset OCBox tries to protect.
+OCBox is a Windows-first harness for people who want the useful part of an autonomous coding agent — shell access, package installs, `sudo`, builds, tests, Docker, public web — without giving that agent the same trust as their Windows host.
 
-OCBox is **not** a malware-analysis lab, a DLP product, or a guarantee against sandbox/hypervisor zero-days. Read [SECURITY.md](SECURITY.md) before using it with sensitive code.
+OpenCode works inside a private clone in a disposable **Docker Sandbox microVM**. Your local **llama.cpp** server stays on Windows. When the session ends, OCBox exports the agent's work through a verified Git bundle into passive `refs/ocbox/*` refs, verifies that the host working tree never changed, and only then destroys the sandbox.
 
-## What OCBox does
+> **Core idea:** trust the agent with the sandbox, not with the host.
+
+## Why this exists
+
+Coding agents are most useful when you stop approving every command. That is also when mistakes, prompt injection, compromised dependencies, or over-eager automation can do the most damage.
+
+OCBox moves the main boundary **below the agent** instead of relying on the agent to behave:
+
+| The agent can | The agent should not get |
+|---|---|
+| edit its private Git clone | write access to your host working tree |
+| run shell commands and `sudo` | arbitrary host filesystem access |
+| install npm/pip/system packages | your host SSH agent |
+| build and run tests | your host Docker socket |
+| run its own private Docker Engine | GitHub/cloud credentials by default |
+| access public HTTP/HTTPS | private/LAN/link-local services |
+| call the configured local llama.cpp endpoint | arbitrary Windows localhost services |
+
+The result comes back as **data to review**, not code that OCBox automatically checks out, merges, or executes.
+
+## The 30-second model
 
 ```text
 Windows host
 ├── llama.cpp / llama-server.exe ── 127.0.0.1:<port>
-├── your Git repository ─────────── host working tree remains untouched
+├── your Git repository ─────────── remains untouched
 │
 └── Docker Sandbox microVM
-    ├── private Git clone
-    ├── OpenCode with no approval prompts
+    ├── private writable Git clone
+    ├── OpenCode with approval prompts disabled
     ├── shell / sudo / package managers
     ├── private Docker Engine
     ├── public web on 80/443
     ├── private/LAN networks denied
     └── host services denied except llama.cpp
             │
-            └─ on normal exit
-               snapshot → verified Git bundle → refs/ocbox/* → destroy microVM
+            └─ normal exit
+               snapshot
+                  ↓
+               verified Git bundle
+                  ↓
+               passive refs/ocbox/* on host
+                  ↓
+               verify host HEAD + worktree unchanged
+                  ↓
+               destroy microVM
 ```
 
-Agent output returns to the host as **passive Git objects** under `refs/ocbox/*`. OCBox does not automatically check out, execute, or merge the result.
+If preservation or verification fails, OCBox prefers to **leave the sandbox alive** rather than destroy work it cannot prove was safely exported.
 
-## Status
+## Quick start
 
-OCBox is an experimental **v0.1 release candidate**. The current Windows reference setup has passed:
-
-- host-isolation test: **12/12**
-- disposable Git handoff test
-- real OpenCode + local-model end-to-end workflow
-- preservation of unstaged/untracked agent changes
-- verified sandbox destruction with an unchanged host working tree
-
-That is evidence that the intended controls are working in the tested environment, not a claim of perfect isolation.
-
-## Requirements
-
-OCBox itself does **not** vendor, build, download, or manage llama.cpp or model weights.
+### 1. Prerequisites
 
 You need:
 
-- Windows
-- PowerShell 5.1 or PowerShell 7
-- Git
-- Docker Sandboxes CLI (`sbx`) and access to Docker Sandboxes
-- an existing, working local `llama.cpp` checkout/build
-- `llama-server.exe` at `llama.cpp\build\bin\Release\llama-server.exe`
-- at least one `.gguf` model under `llama.cpp\models`
+- Windows 11;
+- PowerShell 5.1 or PowerShell 7;
+- Git;
+- Docker Sandboxes CLI (`sbx`) and access to Docker Sandboxes;
+- an existing working `llama.cpp` Windows build;
+- `llama-server.exe` at `llama.cpp\build\bin\Release\llama-server.exe`;
+- at least one `.gguf` model under `llama.cpp\models`.
 
-The model and llama.cpp performance tuning are intentionally outside OCBox's scope. OCBox only starts the configured local server and exposes that one loopback endpoint to the sandbox.
+OCBox deliberately does **not** vendor model weights or manage your llama.cpp build.
 
-## Installation
-
-Clone the repository:
+### 2. Install OCBox
 
 ```powershell
 git clone https://github.com/lucatirel/opencode-local-sandbox.git
 cd opencode-local-sandbox
-```
-
-If your PowerShell execution policy blocks local scripts, enable them for the current shell only:
-
-```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-```
-
-Run the bootstrap:
-
-```powershell
 .\sandbox.ps1 bootstrap
 ```
 
-Bootstrap will:
+`bootstrap` checks the local tooling, asks for your existing llama.cpp directory and GGUF model, writes machine-specific settings to ignored `config.local.ps1`, and runs diagnostics.
 
-1. check for the Docker Sandboxes CLI and offer to install it with `winget` when missing;
-2. verify Git is available;
-3. ask for your existing llama.cpp directory;
-4. ask which GGUF model to use;
-5. ask where new OCBox projects should be created;
-6. write machine-specific values to ignored `config.local.ps1`;
-7. run `doctor`.
+### 3. Open a project
 
-`config.local.ps1` is intentionally not committed.
-
-### Validate the installation
-
-Run the complete local release gate:
-
-```powershell
-.\sandbox.ps1 validate
-```
-
-It runs:
-
-- PowerShell syntax validation;
-- versioned JSON validation;
-- dependency-free functional tests;
-- the host-isolation test;
-- the disposable Git handoff test.
-
-A successful run ends with:
-
-```text
-OCBOX VALIDATION: PASS
-```
-
-The GitHub-hosted CI intentionally runs only dependency-free/static checks. The microVM security and handoff tests must run on a machine with Docker Sandboxes.
-
-## Usage
-
-### Open an existing repository
-
-The hardened workflow requires a Git repository with at least one commit.
+The project must already be a Git repository with at least one commit:
 
 ```powershell
 .\sandbox.ps1 open "C:\code\my-project"
 ```
 
-OCBox will:
-
-1. start the configured local llama-server if it is not already running;
-2. create a disposable Docker Sandbox using clone mode;
-3. apply and verify the effective network policy;
-4. install an isolated OpenCode configuration;
-5. attach you to OpenCode;
-6. let the agent work in the private clone;
-7. snapshot and export the result when OpenCode exits normally;
-8. verify the host repository was not modified;
-9. destroy the microVM only after successful handoff.
-
-### Create a new project
+Or create a new one:
 
 ```powershell
 .\sandbox.ps1 new my-project
 ```
 
-OCBox creates the directory, initializes Git, creates a minimal `README.md`, creates the initial commit required by clone mode, and opens the project.
+Then use OpenCode normally. Inside the microVM it has broad local freedom.
 
-The bootstrap commit uses an ephemeral `OCBox Bootstrap <ocbox@localhost>` identity and does not modify your global Git configuration.
-
-### Review agent output
+### 4. Review what came back
 
 After a successful session:
 
@@ -155,15 +113,110 @@ After a successful session:
 .\sandbox.ps1 review "C:\code\my-project"
 ```
 
-This shows the latest OCBox snapshot and patch without checking it out or running it.
+OCBox shows the latest preserved snapshot and patch **without checking it out or running it**.
 
-The snapshot is stored under a ref similar to:
+## What OCBox adds on top of `sbx`
+
+You can absolutely use Docker Sandboxes directly. OCBox is the opinionated workflow around it for this specific threat model and local-model setup.
+
+| Concern | Raw `sbx` | OCBox workflow |
+|---|---:|---:|
+| disposable microVM | yes | yes |
+| clone mode | configurable | required |
+| host-local llama.cpp wiring | manual | automatic |
+| private/LAN deny policy | manual | configured + verified |
+| shared skills disabled | manual | required |
+| SSH agent removed | manual | enforced/tested |
+| host Docker separation | platform feature | regression-tested |
+| preserve unstaged/untracked agent work | manual | automatic snapshot |
+| verified bundle before import | manual | automatic |
+| passive Git refs instead of checkout | manual | default |
+| verify host HEAD/worktree unchanged | manual | automatic |
+| fail-safe if handoff is uncertain | manual | default |
+| executable isolation/adversarial tests | up to you | included |
+
+OCBox is intentionally narrow: **OpenCode + local llama.cpp + Windows + Docker Sandboxes**. That narrowness lets the default path be explicit and testable instead of trying to be a generic agent platform.
+
+## Evidence, not promises
+
+On the Windows reference environment, the current release candidate has completed:
+
+- **host isolation: PASS (12/12)**;
+- **controlled adversarial containment: PASS (10/10)**;
+- disposable Git handoff: PASS;
+- real OpenCode + local-model end-to-end workflow;
+- preservation of unstaged and untracked agent changes;
+- host `HEAD` and working-tree integrity verification;
+- sandbox destruction only after verified preservation.
+
+Run the complete local release gate yourself:
+
+```powershell
+.\sandbox.ps1 validate
+```
+
+A successful run ends with:
+
+```text
+OCBOX VALIDATION: PASS
+```
+
+Run the credential/host/network/Docker containment probes separately with:
+
+```powershell
+.\sandbox.ps1 adversarial-test
+```
+
+A successful run ends with:
+
+```text
+ADVERSARIAL CONTAINMENT: PASS (10/10)
+```
+
+These are regression tests for the tested environment, **not proof that sandbox or hypervisor vulnerabilities cannot exist**.
+
+## Security model
+
+The core assumption is intentionally pessimistic:
+
+> **The coding agent, its dependencies, and everything it downloads may be hostile.**
+
+The hardened default profile uses:
+
+- Docker Sandboxes clone mode;
+- a private writable clone for agent work;
+- a read-only host source view at the sandbox boundary;
+- no shared host skills;
+- no forwarded SSH agent;
+- no host Docker socket;
+- no intentionally published sandbox ports;
+- public wildcard access restricted to TCP 80/443;
+- explicit denies for common private/LAN/link-local ranges;
+- default deny for unmatched network destinations/ports;
+- one explicit host-service exception for the configured llama.cpp loopback port;
+- effective-policy verification before OpenCode starts;
+- passive Git handoff under `refs/ocbox/*`;
+- host integrity verification before destruction.
+
+### Important limitation: source exfiltration
+
+If a hostile sandbox can read source code **and** reach arbitrary public HTTPS destinations, it can potentially exfiltrate that source without escaping the microVM.
+
+OCBox is therefore **not DLP**. For confidential source where outbound exfiltration is unacceptable, use a much tighter egress allowlist or a dedicated inspected environment.
+
+See [SECURITY.md](SECURITY.md) for the full threat model, residual risks, untrusted-output guidance, and vulnerability-reporting policy.
+
+## Git handoff: why passive refs?
+
+Agent output is imported under a ref similar to:
 
 ```text
 refs/ocbox/20260904-212416-08aa1848/snapshot
 ```
 
-You can inspect it directly with Git:
+Nothing is automatically checked out or merged.
+
+Inspect it directly:
 
 ```powershell
 git -C "C:\code\my-project" for-each-ref refs/ocbox/
@@ -171,39 +224,44 @@ git -C "C:\code\my-project" diff HEAD..refs/ocbox/<session>/snapshot
 git -C "C:\code\my-project" show refs/ocbox/<session>/snapshot:path/to/file
 ```
 
-If you want a local review branch, create it **without checking it out**:
+If you want a local review branch, create it without checking it out:
 
 ```powershell
 git -C "C:\code\my-project" branch ocbox-review refs/ocbox/<session>/snapshot
 ```
 
-Review the changes before executing or merging them.
+Treat the result like an untrusted pull request: review CI workflows, package scripts, build files, hooks, editor tasks, container definitions, installers, and generated binaries before executing anything.
 
-### Recover a sandbox after a failed handoff
+## Failure recovery
 
-OCBox fails safe: if preservation cannot be verified, it leaves the sandbox alive instead of destroying it.
+OCBox is fail-safe around preservation. If it cannot verify the snapshot/bundle/copy/import sequence, the sandbox is intentionally left alive.
 
-Recover it with:
+Recover later with:
 
 ```powershell
 .\sandbox.ps1 handoff "C:\code\my-project"
 ```
 
-### Other commands
+Automatic destruction is also blocked for repository states that currently need dedicated preservation handling, including Git LFS content, multiple worktrees, ignored files, and dirty/diverged submodules.
 
-```powershell
-.\sandbox.ps1 doctor
-.\sandbox.ps1 security-test
-.\sandbox.ps1 handoff-test
-.\sandbox.ps1 validate
-.\sandbox.ps1 server
+## Commands
+
+```text
+.\sandbox.ps1 bootstrap                  configure this PC
+.\sandbox.ps1 doctor                     check local dependencies/config
+.\sandbox.ps1 open C:\code\project       open an existing Git project
+.\sandbox.ps1 new my-project             create and open a Git project
+.\sandbox.ps1 review C:\code\project     inspect the latest snapshot safely
+.\sandbox.ps1 handoff C:\code\project    recover a preserved sandbox
+.\sandbox.ps1 validate                   full local release gate
+.\sandbox.ps1 security-test              host-isolation checks
+.\sandbox.ps1 adversarial-test           credential/network/host probes
+.\sandbox.ps1 cleanup                    remove stale disposable test sandboxes
+.\sandbox.ps1 prepublish-audit           audit reachable Git history before release
+.\sandbox.ps1 server                     run llama-server manually
 ```
 
-Run the launcher with no arguments to see built-in help:
-
-```powershell
-.\sandbox.ps1
-```
+Run `./sandbox.ps1` with no command to show built-in help.
 
 ## Configuration
 
@@ -216,100 +274,39 @@ $LlamaRoot = 'C:\AI\llama.cpp'
 $ModelFile = 'my-model.gguf'
 $ProjectsRoot = 'C:\code'
 
-# Optional model/server tuning:
+# Optional model/server tuning
 $ContextSize = 16384
 $OutputTokens = 2048
 $SandboxMemory = '6g'
 $SandboxCpus = 6
 ```
 
-The llama.cpp launch tuning in `config.example.ps1` is a reference preset, not a universal hardware recommendation. Override it locally when your model or hardware requires different settings.
+The llama.cpp launch tuning in `config.example.ps1` is a reference preset, not a universal hardware recommendation.
 
-## Network model
+## Who this is for
 
-The hardened default profile:
+OCBox is a good fit if you:
 
-- allows public destinations on TCP ports 80 and 443;
-- explicitly denies common private, LAN, VPN/overlay and link-local ranges;
-- explicitly denies Windows localhost ports 80 and 443;
-- relies on default deny for other network destinations/ports;
-- adds one explicit host exception for `localhost:<LlamaPort>`;
-- binds llama.cpp itself to `127.0.0.1`;
-- exposes no host Docker socket;
-- forwards no SSH agent;
-- intentionally publishes no sandbox service ports.
+- use OpenCode with a local llama.cpp model on Windows;
+- want the agent to work with few or no approval interruptions;
+- care more about protecting the host than keeping the sandbox pristine;
+- want the host repository unchanged until you explicitly review the result;
+- are comfortable treating agent output as untrusted code.
 
-OCBox checks the **effective** Docker Sandbox policy before launching OpenCode. If organization-level governance or another policy source changes the result, OCBox fails closed.
+It is **not** intended as:
 
-## Security model
+- a malware detonation lab;
+- a guarantee against Docker Sandbox/microVM/hypervisor zero-days;
+- a source-code DLP product;
+- a generic cross-platform agent orchestration framework.
 
-The core assumption is simple:
+## Roadmap
 
-> The coding agent, its dependencies, and everything it downloads may be hostile.
+See [ROADMAP.md](ROADMAP.md) for the public roadmap. The immediate focus is keeping the host boundary explicit, testable, and boring before broadening backend or platform support.
 
-Compromise of the sandbox itself is therefore not considered a surprising event. The important boundary is what a fully compromised sandbox can reach on the host.
+## Contributing
 
-Run:
-
-```powershell
-.\sandbox.ps1 security-test
-```
-
-The current test verifies public web access, private-network denial, localhost denial and positive controls, host source read-only behavior, private-clone isolation, host-file isolation, SSH-agent isolation, and separation between the sandbox Docker Engine and the host Docker Engine.
-
-See [SECURITY.md](SECURITY.md) for the threat model, source-confidentiality limitation, residual risk, and responsible reporting guidance.
-
-## Important limitation: source exfiltration
-
-A hostile process that can read your source code and reach arbitrary public HTTPS endpoints can exfiltrate that source **without escaping the sandbox**.
-
-The default profile is designed primarily to protect:
-
-- the wider Windows filesystem;
-- host credentials;
-- local services;
-- the host Docker daemon;
-- the private/LAN network;
-- the checked-out host repository.
-
-If source confidentiality is a hard requirement, use a strict outbound allowlist or an external DLP/inspection architecture instead of the default public-web profile.
-
-## Repository layout
-
-```text
-sandbox.ps1                 command entry point
-config.example.ps1          versioned defaults
-scripts/
-  bootstrap.ps1             machine bootstrap
-  doctor.ps1                dependency/config checks
-  validate.ps1              full local release gate
-  open-project.ps1          hardened OpenCode lifecycle
-  review-project.ps1        passive snapshot review
-  handoff-project.ps1       recovery flow
-  security-test.ps1         executable host-isolation checks
-  handoff-test.ps1          executable Git lifecycle check
-  private/
-    Common.ps1              shared configuration/network/runtime helpers
-    GitHandoff.ps1          snapshot/bundle/import/destruction logic
-tests/
-  static-tests.ps1          dependency-free regression checks
-.github/workflows/
-  validate.yml              hosted static CI
-SECURITY.md                 threat model and residual risk
-CONTRIBUTING.md             contributor workflow and release gate
-```
-
-## Development
-
-Before submitting changes:
-
-```powershell
-.\sandbox.ps1 validate
-```
-
-Changes that weaken the network boundary, host isolation, Git handoff, or fail-safe destruction behavior should be treated as security-sensitive.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first: changes that weaken the host boundary or passive handoff model need corresponding reasoning and regression coverage.
 
 ## License
 
