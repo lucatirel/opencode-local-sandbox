@@ -7,13 +7,21 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 function Invoke-ValidationStep {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][scriptblock]$Action
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [switch]$SlowIntegration
     )
 
     Write-Host ""
     Write-Host "==> $Name" -ForegroundColor Cyan
+    if ($SlowIntegration) {
+        Write-Host "    This step creates a disposable Docker Sandbox microVM." -ForegroundColor DarkGray
+        Write-Host "    sbx create may stay quiet for a while; this is expected." -ForegroundColor DarkGray
+    }
+
+    $Started = Get-Date
     & $Action
-    Write-Host "PASS: $Name" -ForegroundColor Green
+    $Elapsed = (Get-Date) - $Started
+    Write-Host ("PASS: {0} ({1:n1}s)" -f $Name, $Elapsed.TotalSeconds) -ForegroundColor Green
 }
 
 Invoke-ValidationStep "PowerShell syntax" {
@@ -53,11 +61,11 @@ Invoke-ValidationStep "Dependency-free functional tests" {
     & (Join-Path $ToolRoot "tests\static-tests.ps1")
 }
 
-Invoke-ValidationStep "Host isolation" {
+Invoke-ValidationStep "Host isolation" -SlowIntegration {
     & (Join-Path $PSScriptRoot "security-test.ps1")
 }
 
-Invoke-ValidationStep "Disposable Git handoff" {
+Invoke-ValidationStep "Disposable Git handoff" -SlowIntegration {
     & (Join-Path $PSScriptRoot "handoff-test.ps1")
 }
 
