@@ -85,7 +85,8 @@ try {
                 $ErrorActionPreference = $Previous
             }
             if ($CreateCode -ne 0) {
-                throw "Sandbox creation failed (exit $CreateCode): $((($CreateOutput | ForEach-Object { \"$($_)\" }) -join \"`n\").Trim())"
+                $CreateText = (($CreateOutput | ForEach-Object { "$($_)" }) -join "`n").Trim()
+                throw "Sandbox creation failed (exit $CreateCode): $CreateText"
             }
         }
         else {
