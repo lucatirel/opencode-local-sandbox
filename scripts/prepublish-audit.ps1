@@ -102,7 +102,8 @@ else {
 }
 
 Write-Host "[3/6] Historical file names" -ForegroundColor Cyan
-$ObjectLines = @(Get-GitText @("rev-list", "--objects", "main") -split "`r?`n")
+$ObjectText = Get-GitText @("rev-list", "--objects", "main")
+$ObjectLines = @($ObjectText -split "`r?`n")
 $BlobRecords = @{}
 $SuspiciousPathPattern = '(?i)(^|/)(\.env($|\.)|config\.local\.ps1$|credentials($|\.)|secrets?($|\.)|id_(rsa|ed25519|ecdsa|dsa)$|[^/]+\.(pem|key|p12|pfx|kdbx)$|hosts\.yml$)'
 $BinaryExtensions = @(".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".7z", ".gz", ".tar", ".exe", ".dll", ".so", ".bin", ".gguf", ".onnx", ".pt", ".pth")
