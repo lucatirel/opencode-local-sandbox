@@ -14,11 +14,7 @@ OpenCode works inside a private clone in a disposable **Docker Sandbox microVM**
 
 > **Core idea:** trust the agent with the sandbox, not with the host.
 
-## Demo
-
-**[▶ Watch the 22-second demo](assets/demo.mp4)**
-
-Inside the sandbox, OpenCode creates `hello.txt`; back on Windows, `git status --short` stays empty.
+<video src="assets/demo.mp4" controls width="100%"></video>
 
 ## Why this exists
 
