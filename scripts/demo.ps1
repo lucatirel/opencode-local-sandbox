@@ -3,6 +3,7 @@ param()
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "private\Common.ps1")
+. (Join-Path $PSScriptRoot "private\LlamaLifecycle.ps1")
 
 Assert-Command "git"
 Assert-Command "sbx"
