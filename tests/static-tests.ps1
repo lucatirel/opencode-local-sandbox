@@ -11,6 +11,22 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
+# Native tools are allowed to write informational text to stderr while returning
+# success. This specifically protects Windows PowerShell 5.1 callers running with
+# ErrorActionPreference=Stop, which otherwise may promote such output to a
+# terminating NativeCommandError.
+$NativeStderrCode = Invoke-External "cmd.exe" @("/d", "/s", "/c", "echo OCBOX_STDERR_PROBE 1>&2 & exit /b 0") 2>$null
+Assert-Equal 0 $NativeStderrCode "Invoke-External must tolerate stderr when the native exit code is zero."
+
+$NativeFailureObserved = $false
+try {
+    Invoke-External "cmd.exe" @("/d", "/s", "/c", "exit /b 7") 2>$null | Out-Null
+}
+catch {
+    $NativeFailureObserved = $true
+}
+Assert-True $NativeFailureObserved "Invoke-External must still fail on a non-zero native exit code."
+
 $First = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
 $FirstAgain = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
 $Second = Get-ProjectSandboxName -ProjectPath "D:\Work\Alpha App" -Prefix "oc"
