@@ -14,7 +14,7 @@ OpenCode works inside a private clone in a disposable **Docker Sandbox microVM**
 
 > **Core idea:** trust the agent with the sandbox, not with the host.
 
-<video src="assets/demo.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/3fd3e617-a81e-4da5-bfd9-56ac2351d64e
 
 ## Why this exists
 
