@@ -71,8 +71,21 @@ function Invoke-External {
         [switch]$IgnoreExitCode
     )
 
-    & $FilePath @ArgumentList
-    $Code = $LASTEXITCODE
+    # Some native tools (including Docker Sandbox) emit normal progress/status
+    # messages on stderr even when they succeed. Under Windows PowerShell 5.1,
+    # a caller using ErrorActionPreference=Stop can otherwise promote that
+    # informational stderr into a terminating NativeCommandError. For native
+    # commands, OCBox therefore treats the process exit code as authoritative.
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $FilePath @ArgumentList
+        $Code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+
     if (-not $IgnoreExitCode -and $Code -ne 0) {
         throw "Comando fallito (exit $Code): $FilePath $($ArgumentList -join ' ')"
     }
