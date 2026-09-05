@@ -11,11 +11,44 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "private\Common.ps1")
+. (Join-Path $PSScriptRoot "private\LlamaLifecycle.ps1")
 . (Join-Path $PSScriptRoot "private\GitHandoff.ps1")
 
 $CallerLocation = (Get-Location).Path
 $Config = Get-ToolConfig
 Assert-Command "sbx"
+
+function Repair-And-VerifySandboxShell {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    # A bare `export` in BASH_ENV prints the complete environment before every
+    # non-interactive command. Remove such lines from Docker Sandbox persistence
+    # and fail closed if a fresh shell still emits an environment dump.
+    $Repair = "sudo sed -i -E '/^[[:space:]]*export[[:space:]]*$/d' /etc/sandbox-persistent.sh"
+    $Previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $RepairOutput = @(& sbx exec $Name bash -c $Repair 2>&1)
+        $RepairCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $Previous }
+    if ($RepairCode -ne 0) {
+        throw "Could not sanitize sandbox shell startup. OpenCode will not start. Output: $($RepairOutput -join ' ')"
+    }
+
+    $Previous = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $ProbeOutput = @(& sbx exec $Name bash -c "printf 'OCBOX_SHELL_OK'" 2>&1)
+        $ProbeCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $Previous }
+
+    $ProbeText = (($ProbeOutput | ForEach-Object { "$($_)" }) -join "`n").Trim()
+    if ($ProbeCode -ne 0 -or $ProbeText -ne "OCBOX_SHELL_OK" -or $ProbeText -match '(?m)^declare -x ') {
+        throw "Sandbox shell startup produced unexpected output. OpenCode will not start to avoid environment disclosure. Probe: $ProbeText"
+    }
+}
 
 $ProjectPath = Resolve-ProjectDirectory -ProjectPath $ProjectPath
 if ($Config.UseCloneMode) {
@@ -65,12 +98,8 @@ try {
             "--memory", $Config.SandboxMemory,
             "--cpus", "$($Config.SandboxCpus)"
         )
-        if ($Config.UseCloneMode) {
-            $CreateArgs += "--clone"
-        }
-        if ($Config.DisableSharedSkills) {
-            $CreateArgs += "--no-share-skills"
-        }
+        if ($Config.UseCloneMode) { $CreateArgs += "--clone" }
+        if ($Config.DisableSharedSkills) { $CreateArgs += "--no-share-skills" }
         $CreateArgs += @("opencode", $ProjectPath)
 
         $CreateStarted = Get-Date
@@ -81,9 +110,7 @@ try {
                 $CreateOutput = @(& sbx @CreateArgs 2>&1)
                 $CreateCode = $LASTEXITCODE
             }
-            finally {
-                $ErrorActionPreference = $Previous
-            }
+            finally { $ErrorActionPreference = $Previous }
             if ($CreateCode -ne 0) {
                 $CreateText = (($CreateOutput | ForEach-Object { "$($_)" }) -join "`n").Trim()
                 throw "Sandbox creation failed (exit $CreateCode): $CreateText"
@@ -96,18 +123,15 @@ try {
         Write-Host ("Sandbox ready in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
     }
     else {
-        if ($DemoMode) {
-            Write-Host "Disposable sandbox ready." -ForegroundColor Green
-        }
-        else {
-            Write-Host "Existing sandbox: $SandboxName" -ForegroundColor Yellow
-        }
+        if ($DemoMode) { Write-Host "Disposable sandbox ready." -ForegroundColor Green }
+        else { Write-Host "Existing sandbox: $SandboxName" -ForegroundColor Yellow }
     }
 
     if (-not $DemoMode) {
         Write-Host "Applying public-web 80/443 policy, isolated llama endpoint, and no-approval OpenCode config..." -ForegroundColor Cyan
     }
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
+    Repair-And-VerifySandboxShell -Name $SandboxName
 
     Write-Host ""
     if ($DemoMode) {
@@ -120,49 +144,30 @@ try {
     else {
         Write-Host "Host project: $ProjectPath" -ForegroundColor Green
         Write-Host "Sandbox: $SandboxName" -ForegroundColor Green
-        if ($Config.UseCloneMode) {
-            Write-Host "Mode: CLONE - host repository read-only; changes stay in the private clone." -ForegroundColor Green
-        }
-        if ($Config.AllowFullWeb) {
-            Write-Host "Network: public HTTP/HTTPS on 80/443; private/LAN and unauthorized host services denied." -ForegroundColor Green
-        }
+        if ($Config.UseCloneMode) { Write-Host "Mode: CLONE - host repository read-only; changes stay in the private clone." -ForegroundColor Green }
+        if ($Config.AllowFullWeb) { Write-Host "Network: public HTTP/HTTPS on 80/443; private/LAN and unauthorized host services denied." -ForegroundColor Green }
         Write-Host "OpenCode: no approval prompts inside the microVM." -ForegroundColor Green
-        if ($Config.DestroyWorkSandboxOnExit) {
-            Write-Host "Lifecycle: Git snapshot -> verified bundle -> refs/ocbox/* -> destroy microVM." -ForegroundColor Green
-        }
-        else {
-            Write-Host "Lifecycle: sandbox is preserved after exit." -ForegroundColor Yellow
-        }
+        if ($Config.DestroyWorkSandboxOnExit) { Write-Host "Lifecycle: Git snapshot -> verified bundle -> refs/ocbox/* -> destroy microVM." -ForegroundColor Green }
+        else { Write-Host "Lifecycle: sandbox is preserved after exit." -ForegroundColor Yellow }
         Write-Host ""
     }
 
     if (-not $NoAttach) {
         Set-Location -LiteralPath $ProjectPath
         & sbx run --name $SandboxName
-        if ($LASTEXITCODE -ne 0) {
-            throw "OpenCode/sbx exited with code $LASTEXITCODE."
-        }
+        if ($LASTEXITCODE -ne 0) { throw "OpenCode/sbx exited with code $LASTEXITCODE." }
 
         if ($Config.DestroyWorkSandboxOnExit) {
-            if (-not $Config.UseCloneMode) {
-                throw "Automatic destruction requires clone mode. Sandbox preserved."
-            }
+            if (-not $Config.UseCloneMode) { throw "Automatic destruction requires clone mode. Sandbox preserved." }
 
             $HostHeadBeforeHandoff = (& git -C $ProjectPath rev-parse HEAD).Trim().ToLowerInvariant()
-            if ($LASTEXITCODE -ne 0) {
-                throw "Could not read host HEAD before handoff. Sandbox preserved."
-            }
+            if ($LASTEXITCODE -ne 0) { throw "Could not read host HEAD before handoff. Sandbox preserved." }
 
             $SessionId = Get-HandoffSessionId
-            if ($DemoMode) {
-                Write-Host ""
-                Write-Host "AGENT EXITED - VERIFYING GIT-ONLY HANDOFF" -ForegroundColor Cyan
-            }
-            else {
-                Write-Host "Preserving agent work before destroying the microVM..." -ForegroundColor Cyan
-            }
-            $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
+            if ($DemoMode) { Write-Host ""; Write-Host "AGENT EXITED - VERIFYING GIT-ONLY HANDOFF" -ForegroundColor Cyan }
+            else { Write-Host "Preserving agent work before destroying the microVM..." -ForegroundColor Cyan }
 
+            $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
             if ($Snapshot.IgnoredCount -gt 0) {
                 Write-Warning "Found $($Snapshot.IgnoredCount) ignored/untracked files that Git handoff cannot preserve automatically. Sandbox kept alive to avoid data loss."
             }
@@ -192,24 +197,14 @@ try {
                 }
                 else {
                     Write-Host "MicroVM destroyed. Host working tree was not modified." -ForegroundColor Green
-                    if ($HasChanges) {
-                        Write-Host "Safe review: .\sandbox.ps1 review `"$ProjectPath`"" -ForegroundColor Cyan
-                    }
+                    if ($HasChanges) { Write-Host "Safe review: .\sandbox.ps1 review `"$ProjectPath`"" -ForegroundColor Cyan }
                 }
             }
         }
     }
 }
 finally {
-    if (Test-Path -LiteralPath $CallerLocation -PathType Container) {
-        Set-Location -LiteralPath $CallerLocation
-    }
-
-    if ($Config.DisableSshAgentForwarding -and $null -ne $SavedSshAuthSock) {
-        $env:SSH_AUTH_SOCK = $SavedSshAuthSock
-    }
-
-    if ($null -ne $ServerLauncher) {
-        Stop-LlamaProcessTree -ProcessId ([int]$ServerLauncher.ProcessId) -Port ([int]$ServerLauncher.Port)
-    }
+    if (Test-Path -LiteralPath $CallerLocation -PathType Container) { Set-Location -LiteralPath $CallerLocation }
+    if ($Config.DisableSshAgentForwarding -and $null -ne $SavedSshAuthSock) { $env:SSH_AUTH_SOCK = $SavedSshAuthSock }
+    if ($null -ne $ServerLauncher) { Stop-LlamaProcessTree -ProcessId ([int]$ServerLauncher.ProcessId) -Port ([int]$ServerLauncher.Port) }
 }
