@@ -18,6 +18,18 @@ function Invoke-ValidationStep {
     Write-Host ("PASS: {0} ({1:n1}s)" -f $Name, $Elapsed.TotalSeconds) -ForegroundColor Green
 }
 
+function Receive-ValidationJobOutput {
+    param([Parameter(Mandatory = $true)]$Job)
+
+    # Docker Sandbox writes normal progress/status messages to stderr. When a
+    # child PowerShell job serializes those records back to a parent running
+    # with ErrorActionPreference=Stop, Receive-Job can incorrectly turn a
+    # successful native command into a terminating NativeCommandError.
+    # Real script failures still transition the job to Failed and are handled
+    # explicitly by Invoke-LongValidationScript below.
+    Receive-Job -Job $Job -ErrorAction SilentlyContinue
+}
+
 function Invoke-LongValidationScript {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -39,14 +51,14 @@ function Invoke-LongValidationScript {
     try {
         while ($Job.State -eq "Running") {
             $null = Wait-Job -Job $Job -Timeout 30
-            Receive-Job -Job $Job
+            Receive-ValidationJobOutput -Job $Job
             if ($Job.State -eq "Running") {
                 $ElapsedNow = (Get-Date) - $Started
                 Write-Host ("    ...still running ({0:n0}s elapsed)" -f $ElapsedNow.TotalSeconds) -ForegroundColor DarkGray
             }
         }
 
-        Receive-Job -Job $Job
+        Receive-ValidationJobOutput -Job $Job
         if ($Job.State -ne "Completed") {
             $Reason = $Job.ChildJobs[0].JobStateInfo.Reason
             if ($null -ne $Reason) { throw $Reason }
