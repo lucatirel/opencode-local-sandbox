@@ -175,7 +175,9 @@ foreach ($Record in $BlobRecords.Values) {
     $PersonalMatches = [regex]::Matches($Content, '(?i)C:\\Users\\([^\\\s]+)\\')
     foreach ($Match in $PersonalMatches) {
         $UserPart = $Match.Groups[1].Value
-        if ($UserPart -notmatch '^(nome|user|username|utente|example|sample|test)$') {
+        # Public is a shared Windows path used deliberately by the recording-safe
+        # demo. YOUR_USER and the other names below are documentation placeholders.
+        if ($UserPart -notmatch '^(nome|user|username|utente|example|sample|test|public|your[_-]?user)$') {
             Add-Warning "Personal absolute path" $Path "reachable blob $Sha contains a non-placeholder C:\\Users\\... path"
             break
         }
@@ -189,7 +191,7 @@ foreach ($Record in $BlobRecords.Values) {
 Write-Host ("      Historical text blobs content-scanned: {0}" -f $Scanned) -ForegroundColor DarkGray
 
 Write-Host "[5/6] Current-tree release files" -ForegroundColor Cyan
-$Required = @("README.md", "SECURITY.md", "CONTRIBUTING.md", "PROJECT_STATUS.md", "LICENSE")
+$Required = @("README.md", "SECURITY.md", "CONTRIBUTING.md", "ROADMAP.md", "LICENSE")
 foreach ($Name in $Required) {
     if (-not (Test-Path -LiteralPath (Join-Path $ToolRoot $Name))) {
         if ($Name -eq "LICENSE") {
