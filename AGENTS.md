@@ -19,7 +19,7 @@ The central design principle is: **the agent and everything it downloads may be 
 - Sandbox destruction must happen only after verified Git preservation. On any preservation failure, keep the sandbox alive.
 - Preserve the ignored-file guard: do not destroy a sandbox if Git would omit potentially valuable ignored output.
 - `security-test` must retain meaningful negative and positive controls for the host-service boundary.
-- `handoff-test` must exercise an actual OpenCode-agent sandbox, not a weaker shell-only substitute.
+- `handoff-test` must exercise a real disposable clone-mode Docker Sandbox and the complete snapshot/bundle/passive-ref/destruction path. It may use the lightweight shell template so the release gate does not depend on OpenCode or model startup.
 - Keep `sandbox.ps1` small and obvious; implementation details belong under `scripts/`.
 - Validate all PowerShell files with the parser and run dependency-free static tests before merging.
 - Treat changes to `.github`, build scripts, package scripts, editor automation and other indirect execution paths as security-sensitive.
