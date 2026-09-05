@@ -26,6 +26,9 @@ catch {
     $NativeFailureObserved = $true
 }
 Assert-True $NativeFailureObserved "Invoke-External must still fail on a non-zero native exit code."
+# The non-zero exit code above is expected test input. Reset LASTEXITCODE so a
+# successful static-test script does not itself return failure to CI.
+$global:LASTEXITCODE = 0
 
 $First = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
 $FirstAgain = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
