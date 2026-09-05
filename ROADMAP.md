@@ -17,8 +17,8 @@ The roadmap prioritizes a boring, testable host boundary before adding breadth.
 - [x] host-isolation regression suite
 - [x] controlled adversarial containment suite
 - [x] Git-history pre-publication audit
+- [x] add a short real-world demo GIF/video
 - [ ] publish first tagged release
-- [ ] add a short real-world demo GIF/video
 
 ## v0.2 — harder containment testing
 
