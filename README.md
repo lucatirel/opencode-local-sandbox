@@ -6,13 +6,15 @@
 [![Docker Sandboxes](https://img.shields.io/badge/Docker%20Sandboxes-sbx-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/ai/sandboxes/)
 [![OpenCode](https://img.shields.io/badge/agent-OpenCode-111111)](https://opencode.ai/)
 
-**Run OpenCode with a local LLM in a disposable microVM — full agent autonomy inside, Git-only handoff out.**
+**A secure OpenCode sandbox for local LLM coding agents on Windows — Docker Sandboxes microVM isolation, llama.cpp integration, and verified Git-only handoff.**
 
-OCBox is a Windows-first harness for people who want the useful part of an autonomous coding agent — shell access, package installs, `sudo`, builds, tests, Docker, public web — without giving that agent the same trust as their Windows host.
+OCBox is a Windows-first **OpenCode sandbox** for running an autonomous coding agent against a **local LLM** without giving that agent the same trust as the Windows host. It combines **OpenCode**, **llama.cpp**, and **Docker Sandboxes** so the agent can use shell access, `sudo`, package managers, builds, tests, Docker, and the public web inside a disposable microVM.
 
-OpenCode works inside a private clone in a disposable **Docker Sandbox microVM**. Your local **llama.cpp** server stays on Windows. When the session ends, OCBox exports the agent's work through a verified Git bundle into passive `refs/ocbox/*` refs, verifies that the host working tree never changed, and only then destroys the sandbox.
+OpenCode works inside a private clone in the sandbox. Your local **llama.cpp / llama-server** stays on Windows. When the session ends, OCBox exports the agent's work through a verified Git bundle into passive `refs/ocbox/*` refs, verifies that the host working tree never changed, and only then destroys the sandbox.
 
 > **Core idea:** trust the agent with the sandbox, not with the host.
+
+**Designed for:** OpenCode sandboxing, local LLM coding agents, llama.cpp workflows, Windows AI development, Docker Sandboxes, coding-agent containment, and host-isolated autonomous development.
 
 https://github.com/user-attachments/assets/3fd3e617-a81e-4da5-bfd9-56ac2351d64e
 
