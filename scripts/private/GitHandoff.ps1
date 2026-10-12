@@ -40,67 +40,17 @@ function New-SandboxGitSnapshot {
 
     $SnapshotBranch = "ocbox-snapshot-$SessionId"
     $Message = "ocbox snapshot $SessionId"
-    $IgnoredList = "/tmp/ocbox-ignored-$SessionId.txt"
-    $SubmoduleStatus = "/tmp/ocbox-submodule-status-$SessionId.txt"
-    $SubmoduleHeads = "/tmp/ocbox-submodule-heads-$SessionId.txt"
-
-    # Conservative preservation gate. These cases need dedicated transport logic:
-    # - ignored files are outside ordinary Git history;
-    # - multiple worktrees can contain independent uncommitted state;
-    # - Git LFS objects are not embedded in a normal Git bundle;
-    # - dirty/diverged submodules contain nested repository state not captured by
-    #   the parent repository bundle.
-    #
-    # Keep this shell deliberately simple. It crosses PowerShell -> sbx -> bash, so
-    # avoid nested shell command strings/substitutions where a temp file is enough.
-    $GuardCommand = @"
-set -eu
-git rev-parse --is-inside-work-tree >/dev/null
-WORKTREE_COUNT=`$(git worktree list --porcelain | grep -c '^worktree ' || true)
-if [ "`$WORKTREE_COUNT" -gt 1 ]; then
-  printf '%s\n' 'OCBOX_MULTIPLE_WORKTREES'
-  git worktree list --porcelain
-  exit 43
-fi
-if command -v git-lfs >/dev/null 2>&1 || git lfs version >/dev/null 2>&1; then
-  if git lfs ls-files 2>/dev/null | grep -q .; then
-    printf '%s\n' 'OCBOX_GIT_LFS_TRACKED'
-    exit 44
-  fi
-fi
-if [ -f .gitmodules ]; then
-  rm -f '$SubmoduleStatus' '$SubmoduleHeads'
-  if ! git submodule foreach --quiet --recursive git status --porcelain=v1 --untracked-files=normal > '$SubmoduleStatus' 2>&1; then
-    printf '%s\n' 'OCBOX_DIRTY_SUBMODULE'
-    cat '$SubmoduleStatus'
-    exit 45
-  fi
-  if [ -s '$SubmoduleStatus' ]; then
-    printf '%s\n' 'OCBOX_DIRTY_SUBMODULE'
-    cat '$SubmoduleStatus'
-    exit 45
-  fi
-  git submodule status --recursive > '$SubmoduleHeads' 2>/dev/null || true
-  if grep -Eq "^[+U]" '$SubmoduleHeads'; then
-    printf '%s\n' 'OCBOX_DIRTY_SUBMODULE'
-    cat '$SubmoduleHeads'
-    exit 45
-  fi
-fi
-git ls-files --others -i --exclude-standard > '$IgnoredList'
-if [ -s '$IgnoredList' ]; then
-  printf '%s\n' 'OCBOX_IGNOREDFILES'
-  cat '$IgnoredList'
-  exit 42
-fi
-"@
+    # A static shell resource keeps quoting out of the preservation rules and
+    # lets the same guard run in integration fixtures with real Git.
+    $GuardCommand = Get-Content -LiteralPath (Join-Path $PSScriptRoot "preservation-guard.sh") -Raw
 
     $Guard = Invoke-SandboxShellCapture -SandboxName $SandboxName -Command $GuardCommand
     switch ($Guard.Code) {
         42 { throw "La sandbox contiene file gitignored non preservabili automaticamente. Sandbox conservata. Output: $($Guard.Text)" }
         43 { throw "La sandbox contiene worktree Git secondari. Handoff automatico non sicuro: sandbox conservata. Output: $($Guard.Text)" }
         44 { throw "Il repository usa Git LFS. Un Git bundle non preserva gli oggetti LFS: sandbox conservata. Implementare/usare handoff LFS prima della distruzione." }
-        45 { throw "Sono presenti modifiche o commit divergenti dentro un submodule. Sandbox conservata per evitare perdita dati. Output: $($Guard.Text)" }
+        45 { throw "Submodule non supportati dal bundle del parent, anche se puliti. Sandbox conservata." }
+        46 { throw "Ispezione Git/LFS fallita. Sandbox conservata." }
     }
     if ($Guard.Code -ne 0) {
         throw "Controlli pre-handoff Git falliti (exit $($Guard.Code)). Sandbox conservata. Output: $($Guard.Text)"
@@ -132,9 +82,11 @@ function Export-SandboxGitHandoff {
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][string]$SandboxName,
         [Parameter(Mandatory = $true)][string]$SessionId,
-        [Parameter(Mandatory = $true)]$Snapshot
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [ValidateSet("opencode", "shell")][string]$Agent = "opencode"
     )
 
+    $null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath -Agent $Agent
     $RemoteName = "sandbox-$SandboxName"
     $RefRoot = "refs/ocbox/$SessionId"
     $SnapshotRef = "$RefRoot/snapshot"
@@ -226,12 +178,17 @@ test -s '$BundleInSandbox'
         }
 
         $HostHeadAfter = (& git @SafeGitConfig -C $ProjectPath rev-parse HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Cannot verify host HEAD after handoff. Sandbox preserved." }
         $HostStatusAfter = (@(& git @SafeGitConfig -C $ProjectPath status --porcelain=v1 2>$null) -join "`n")
+        if ($LASTEXITCODE -ne 0) { throw "Cannot verify host status after handoff. Sandbox preserved." }
         if ($HostHeadAfter -ne $HostHeadBefore -or $HostStatusAfter -ne $HostStatusBefore) {
             throw "Il working tree host e cambiato durante l'handoff. Sandbox conservata per analisi."
         }
 
         return [pscustomobject]@{
+            Agent = $Agent
+            SandboxName = $SandboxName
+            ProjectPath = $ProjectPath
             SessionId = $SessionId
             RefRoot = $RefRoot
             SnapshotRef = $SnapshotRef
@@ -255,6 +212,19 @@ function Remove-SandboxAfterHandoff {
         [Parameter(Mandatory = $true)]$Handoff
     )
 
+    if ($Handoff.SandboxName -cne $SandboxName -or $Handoff.ProjectPath -cne $ProjectPath -or
+        $Handoff.SnapshotRef -cne "refs/ocbox/$($Handoff.SessionId)/snapshot" -or
+        $Handoff.SnapshotSha -notmatch '^[0-9a-f]{40,64}$') {
+        throw "Handoff identity is invalid. Sandbox preserved."
+    }
+    $null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath -Agent $Handoff.Agent
+    $SafeGitConfig = @("-c", "core.hooksPath=NUL", "-c", "maintenance.auto=false", "-c", "gc.auto=0")
+    $PreservedBeforeRemoval = @(& git @SafeGitConfig -C $ProjectPath rev-parse --verify "$($Handoff.SnapshotRef)^{commit}")
+    if ($LASTEXITCODE -ne 0 -or $PreservedBeforeRemoval.Count -ne 1 -or
+        "$($PreservedBeforeRemoval[0])".Trim() -cne $Handoff.SnapshotSha) {
+        throw "Passive handoff ref changed or is missing. Sandbox preserved."
+    }
+
     $Previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -265,8 +235,11 @@ function Remove-SandboxAfterHandoff {
     if ($Code -ne 0) {
         throw "Handoff salvato in $($Handoff.SnapshotRef), ma sbx rm e fallito. Output: $($Output -join ' ')"
     }
+    if (@(Get-SandboxNames) -contains $SandboxName) {
+        throw "Sandbox still exists after removal. Ownership receipt retained; handoff is in $($Handoff.SnapshotRef)."
+    }
 
-    $SafeGitConfig = @("-c", "core.hooksPath=NUL", "-c", "maintenance.auto=false", "-c", "gc.auto=0")
+    Remove-Item -LiteralPath (Get-SandboxOwnershipPath -SandboxName $SandboxName) -Force
 
     $Previous = $ErrorActionPreference
     try {

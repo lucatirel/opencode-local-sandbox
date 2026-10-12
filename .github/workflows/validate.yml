@@ -5,6 +5,13 @@ on:
   pull_request:
 
 jobs:
+  preservation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test preservation guard with real Git repositories
+        run: python3 tests/preservation-tests.py
+
   static:
     runs-on: windows-latest
 

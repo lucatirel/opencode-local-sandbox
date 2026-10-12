@@ -15,12 +15,14 @@ function Assert-True {
 # success. This specifically protects Windows PowerShell 5.1 callers running with
 # ErrorActionPreference=Stop, which otherwise may promote such output to a
 # terminating NativeCommandError.
-$NativeStderrCode = Invoke-External "cmd.exe" @("/d", "/s", "/c", "echo OCBOX_STDERR_PROBE 1>&2 & exit /b 0") 2>$null
+$PowerShellName = if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' } elseif ([IO.Path]::DirectorySeparatorChar -eq '\') { 'pwsh.exe' } else { 'pwsh' }
+$PowerShellExe = Join-Path $PSHOME $PowerShellName
+$NativeStderrCode = Invoke-External $PowerShellExe @('-NoProfile', '-Command', "[Console]::Error.WriteLine('OCBOX_STDERR_PROBE'); exit 0") 2>$null
 Assert-Equal 0 $NativeStderrCode "Invoke-External must tolerate stderr when the native exit code is zero."
 
 $NativeFailureObserved = $false
 try {
-    Invoke-External "cmd.exe" @("/d", "/s", "/c", "exit /b 7") 2>$null | Out-Null
+    Invoke-External $PowerShellExe @('-NoProfile', '-Command', 'exit 7') 2>$null | Out-Null
 }
 catch {
     $NativeFailureObserved = $true
@@ -30,9 +32,9 @@ Assert-True $NativeFailureObserved "Invoke-External must still fail on a non-zer
 # successful static-test script does not itself return failure to CI.
 $global:LASTEXITCODE = 0
 
-$First = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
-$FirstAgain = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
-$Second = Get-ProjectSandboxName -ProjectPath "D:\Work\Alpha App" -Prefix "oc"
+$First = Get-ProjectSandboxName -ProjectPath (Join-Path ([IO.Path]::GetTempPath()) "Projects/Alpha App") -Prefix "oc"
+$FirstAgain = Get-ProjectSandboxName -ProjectPath (Join-Path ([IO.Path]::GetTempPath()) "Projects/Alpha App") -Prefix "oc"
+$Second = Get-ProjectSandboxName -ProjectPath (Join-Path ([IO.Path]::GetTempPath()) "Work/Alpha App") -Prefix "oc"
 
 Assert-Equal $First $FirstAgain "The same path must produce the same sandbox name."
 Assert-True ($First -ne $Second) "Different paths with the same leaf name must produce different sandbox names."
@@ -83,10 +85,11 @@ Assert-True ($HandoffSource -match 'fetch --no-tags --force \$BundleHost') "Impo
 Assert-True ($HandoffSource -match 'refs/ocbox/') "Handoff must land in passive refs/ocbox/* refs."
 Assert-True ($HandoffSource -match 'core\.hooksPath=NUL') "Host Git hooks must be disabled during handoff."
 Assert-True ($HandoffSource -match 'maintenance\.auto=false') "Automatic Git maintenance must be disabled during handoff."
-Assert-True ($HandoffSource -match 'OCBOX_GIT_LFS_TRACKED') "Git LFS must block automatic destruction until dedicated transport exists."
-Assert-True ($HandoffSource -match 'OCBOX_DIRTY_SUBMODULE') "Dirty/diverged submodules must block automatic destruction."
-Assert-True ($HandoffSource -match 'OCBOX_MULTIPLE_WORKTREES') "Multiple worktrees must block automatic destruction."
-Assert-True ($HandoffSource -match 'OCBOX_IGNOREDFILES') "Ignored files must block automatic destruction."
+$GuardSource = Get-Content -LiteralPath (Join-Path $ToolRoot 'scripts/private/preservation-guard.sh') -Raw
+Assert-True ($GuardSource -match 'OCBOX_GIT_LFS_TRACKED') "Git LFS must block automatic destruction until dedicated transport exists."
+Assert-True ($GuardSource -match 'OCBOX_SUBMODULE_UNSUPPORTED') "All submodules must block automatic destruction."
+Assert-True ($GuardSource -match 'OCBOX_MULTIPLE_WORKTREES') "Multiple worktrees must block automatic destruction."
+Assert-True ($GuardSource -match 'OCBOX_IGNOREDFILES') "Ignored files must block automatic destruction."
 
 $OpenSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\open-project.ps1") -Raw
 Assert-True ($OpenSource -match '--clone') "The hardened workflow must use clone mode."
@@ -116,5 +119,7 @@ Assert-True ($ValidateSource -match 'static-tests\.ps1') "validate must run depe
 Assert-True ($ValidateSource -match 'security-test\.ps1') "validate must run host-isolation tests."
 Assert-True ($ValidateSource -match 'handoff-test\.ps1') "validate must run the Git handoff test."
 Assert-True ($ValidateSource -match 'OCBOX VALIDATION: PASS') "validate must provide an explicit release-gate success marker."
+
+& (Join-Path $PSScriptRoot "security-regressions.ps1")
 
 Write-Host "Static functional tests passed." -ForegroundColor Green

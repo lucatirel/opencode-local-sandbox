@@ -1,4 +1,5 @@
 Set-StrictMode -Version 3.0
+. (Join-Path $PSScriptRoot "SandboxIdentity.ps1")
 
 function Get-ToolRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path

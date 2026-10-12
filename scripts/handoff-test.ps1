@@ -34,6 +34,8 @@ try {
     # lightweight shell template avoids coupling the handoff gate to OpenCode or a model.
     Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
 
+    Register-NewSandboxOwnership -SandboxName $Sandbox -ProjectPath $Repo -Agent "shell" -Purpose "test"
+
     Write-Host "Creating changes inside the private clone..." -ForegroundColor DarkGray
     $Write = Invoke-SandboxShellCapture -SandboxName $Sandbox -Command "printf '%s\n' '$ExpectedText' > handoff-proof.txt && printf '%s\n' 'second change' >> README.txt"
     if ($Write.Code -ne 0) { throw "Could not create the sandbox change: $($Write.Text)" }
@@ -49,7 +51,7 @@ try {
     }
 
     Write-Host "Importing into passive refs/ocbox/... namespace..." -ForegroundColor DarkGray
-    $Handoff = Export-SandboxGitHandoff -ProjectPath $Repo -SandboxName $Sandbox -SessionId $SessionId -Snapshot $Snapshot
+    $Handoff = Export-SandboxGitHandoff -ProjectPath $Repo -SandboxName $Sandbox -SessionId $SessionId -Snapshot $Snapshot -Agent "shell"
 
     $HostHeadAfterFetch = (& git -C $Repo rev-parse HEAD).Trim()
     $HostStatusAfterFetch = (@(& git -C $Repo status --porcelain=v1) -join "`n")
@@ -88,5 +90,5 @@ finally {
     if (-not $SandboxRemoved) {
         Write-Warning "Test did not complete; any existing sandbox is intentionally left intact for diagnosis."
     }
-    Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
+    if ($SandboxRemoved) { Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue }
 }

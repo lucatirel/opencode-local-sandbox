@@ -157,7 +157,26 @@ If that is your use case, add another isolation layer such as a disposable dedic
 
 If OCBox cannot prove that agent work has been safely preserved, the preferred failure mode is to **leave the sandbox alive** rather than destroy it and risk data loss.
 
-Automatic destruction is deliberately blocked for repository states that need dedicated preservation logic, including Git LFS content, multiple worktrees, ignored files, and dirty/diverged submodules.
+Automatic destruction is blocked when the guards detect Git LFS content,
+multiple worktrees, ignored files, or submodules, including clean submodules.
+Inspection errors preserve the sandbox. A clean submodule may contain commits
+that exist only in the VM; a parent Git bundle does not carry those objects.
+
+Host ownership receipts bind new sandboxes to their runtime ID, agent and project.
+The wrapper rejects legacy/unregistered sandboxes and mismatched metadata rather
+than adopting them by name. Receipts attest OCBox's creation flags; they are not
+full runtime attestation of mounts, credentials, policies or published ports.
+The stable-ID JSON adapter must be verified on the target sbx version.
+
+Before automatic removal, OCBox rechecks the passive snapshot ref and ownership.
+These checks do not freeze background writers or make snapshot/export/removal
+atomic. The automatic handoff path still uses forced removal; concurrent sessions
+and files outside the repository require further work. Host HEAD/status comparison
+is not a byte-level integrity proof. See [hardening status](docs/preservation-hardening.md).
+
+Cleanup has a narrower contract: no argument only previews host-registered test
+sandboxes; an explicit target must have a matching test receipt. It never selects
+projects by a name prefix, and it does not use forced removal.
 
 ## Reporting a vulnerability
 

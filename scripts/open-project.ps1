@@ -16,6 +16,7 @@ $ErrorActionPreference = "Stop"
 
 $CallerLocation = (Get-Location).Path
 $Config = Get-ToolConfig
+Assert-HardenedConfig -Config $Config
 Assert-Command "sbx"
 
 function Repair-And-VerifySandboxShell {
@@ -62,6 +63,15 @@ if ([string]::IsNullOrWhiteSpace($SandboxName)) {
     }
 }
 
+# Inspect before starting the backend or executing anything in an existing VM.
+$Existing = @(Get-SandboxNames)
+if ($Existing -contains $SandboxName) {
+    $null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath
+}
+elseif (Test-Path -LiteralPath (Get-SandboxOwnershipPath -SandboxName $SandboxName)) {
+    throw "Stale ownership receipt for $SandboxName. Inspect it before creating a replacement."
+}
+
 $ServerLauncher = $null
 $ServerWasAlreadyRunning = Test-LlamaApi -Port ([int]$Config.LlamaPort)
 $SavedSshAuthSock = $env:SSH_AUTH_SOCK
@@ -80,7 +90,6 @@ try {
         }
     }
 
-    $Existing = @(Get-SandboxNames)
     if ($Existing -notcontains $SandboxName) {
         if ($DemoMode) {
             Write-Host "Creating disposable Docker Sandbox microVM..." -ForegroundColor Cyan
@@ -119,6 +128,7 @@ try {
         else {
             Invoke-External "sbx" $CreateArgs
         }
+        Register-NewSandboxOwnership -SandboxName $SandboxName -ProjectPath $ProjectPath
         $Elapsed = (Get-Date) - $CreateStarted
         Write-Host ("Sandbox ready in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
     }
@@ -130,6 +140,7 @@ try {
     if (-not $DemoMode) {
         Write-Host "Applying public-web 80/443 policy, isolated llama endpoint, and no-approval OpenCode config..." -ForegroundColor Cyan
     }
+    $null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
     Repair-And-VerifySandboxShell -Name $SandboxName
 
@@ -153,6 +164,7 @@ try {
     }
 
     if (-not $NoAttach) {
+        $null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath
         Set-Location -LiteralPath $ProjectPath
         & sbx run --name $SandboxName
         if ($LASTEXITCODE -ne 0) { throw "OpenCode/sbx exited with code $LASTEXITCODE." }
@@ -167,6 +179,7 @@ try {
             if ($DemoMode) { Write-Host ""; Write-Host "AGENT EXITED - VERIFYING GIT-ONLY HANDOFF" -ForegroundColor Cyan }
             else { Write-Host "Preserving agent work before destroying the microVM..." -ForegroundColor Cyan }
 
+            $null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath
             $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
             if ($Snapshot.IgnoredCount -gt 0) {
                 Write-Warning "Found $($Snapshot.IgnoredCount) ignored/untracked files that Git handoff cannot preserve automatically. Sandbox kept alive to avoid data loss."

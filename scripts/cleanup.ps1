@@ -1,65 +1,37 @@
 [CmdletBinding()]
-param()
+param([string]$SandboxName)
 
-$ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "private\Common.ps1")
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'private\Common.ps1')
+Assert-Command 'sbx'
 
-Assert-Command "sbx"
-
-$Patterns = @(
-    '^oc-security-',
-    '^oc-handoff-',
-    '^oc-sandbox-template-smoke-'
-)
-
-$Names = @(Get-SandboxNames)
-$Candidates = @(
-    $Names | Where-Object {
-        $Name = $_
-        @($Patterns | Where-Object { $Name -match $_ }).Count -gt 0
-    } | Sort-Object -Unique
-)
-
-Write-Host ""
-Write-Host "OCBox stale test sandbox cleanup" -ForegroundColor Cyan
-Write-Host "Only known disposable test namespaces are eligible." -ForegroundColor DarkGray
-Write-Host "Project sandboxes such as oc-<project>-<hash> and non-OCBox sandboxes are never selected." -ForegroundColor DarkGray
-Write-Host ""
-
-if ($Candidates.Count -eq 0) {
-    Write-Host "Nothing to remove." -ForegroundColor Green
+# Names are never authority to delete. No target means preview only.
+if ([string]::IsNullOrWhiteSpace($SandboxName)) {
+    $Directory = Join-Path (Get-ToolRoot) '.local\sandboxes'
+    Write-Host 'Preview only. No sandbox will be removed.' -ForegroundColor Cyan
+    if (Test-Path -LiteralPath $Directory -PathType Container) {
+        foreach ($File in @(Get-ChildItem -LiteralPath $Directory -Filter '*.json' -File)) {
+            try {
+                $Receipt = Get-Content -LiteralPath $File.FullName -Raw | ConvertFrom-Json
+                if ($Receipt.purpose -eq 'test') { Write-Host "  $($Receipt.sandboxName)" }
+            }
+            catch { Write-Warning "Unreadable test receipt: $($File.Name). Nothing removed." }
+        }
+    }
+    Write-Host 'To remove one registered test sandbox: .\sandbox.ps1 cleanup NAME'
+    Write-Host 'Legacy/unregistered sandboxes require manual inspection and preservation.'
     return
 }
 
-Write-Host "Removing:" -ForegroundColor Yellow
-$Candidates | ForEach-Object { Write-Host "  $_" }
-Write-Host ""
-
-$Failures = @()
-foreach ($Sandbox in $Candidates) {
-    Write-Host "Removing $Sandbox ..." -ForegroundColor Cyan
-    $Old = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        & sbx rm --force $Sandbox
-        $Code = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $Old
-    }
-
-    if ($Code -ne 0) {
-        $Failures += $Sandbox
-        Write-Host "FAIL: $Sandbox" -ForegroundColor Red
-    }
-    else {
-        Write-Host "PASS: $Sandbox removed" -ForegroundColor Green
-    }
+$Path = Get-SandboxOwnershipPath -SandboxName $SandboxName
+if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'No host ownership receipt. Nothing removed.' }
+$Receipt = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+if ($Receipt.purpose -cne 'test') { throw 'Cleanup refuses project sandboxes. Use verified handoff.' }
+$null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $Receipt.projectPath -Agent $Receipt.agent
+# Keep sbx confirmation and its active-session protection; never pass --force.
+Invoke-External 'sbx' @('rm', $SandboxName) | Out-Null
+if (@(Get-SandboxNames) -contains $SandboxName) {
+    throw 'Sandbox still exists (removal cancelled or incomplete). Ownership receipt retained.'
 }
-
-if ($Failures.Count -gt 0) {
-    throw "Cleanup failed for: $($Failures -join ', ')"
-}
-
-Write-Host ""
-Write-Host "OCBOX CLEANUP: PASS ($($Candidates.Count) removed)" -ForegroundColor Green
+Remove-Item -LiteralPath $Path -Force
+Write-Host "Removed registered test sandbox: $SandboxName" -ForegroundColor Green

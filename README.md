@@ -143,7 +143,8 @@ OCBox is intentionally narrow: **OpenCode + local llama.cpp + Windows + Docker S
 
 ## Evidence, not promises
 
-On the Windows reference environment, the current release candidate has completed:
+The previous Windows reference environment reported the following results. They
+are historical evidence, not validation of the current security changes on Draco:
 
 - **host isolation: PASS (12/12)**;
 - **controlled adversarial containment: PASS (10/10)**;
@@ -152,6 +153,10 @@ On the Windows reference environment, the current release candidate has complete
 - preservation of unstaged and untracked agent changes;
 - host `HEAD` and working-tree integrity verification;
 - sandbox destruction only after verified preservation.
+
+The preservation hardening adds mocked lifecycle regressions and real-Git guard
+tests. A new Windows/microVM run is still required; see
+[current hardening status](docs/preservation-hardening.md) for scope and remaining gaps.
 
 Run the complete local release gate yourself:
 
@@ -246,7 +251,24 @@ Recover later with:
 .\sandbox.ps1 handoff "C:\code\my-project"
 ```
 
-Automatic destruction is also blocked for repository states that currently need dedicated preservation handling, including Git LFS content, multiple worktrees, ignored files, and dirty/diverged submodules.
+Automatic destruction is also blocked when the guards detect Git LFS content,
+multiple worktrees, ignored files, or submodules (including clean submodules).
+Git/LFS inspection errors also preserve the sandbox.
+
+`open` and `handoff` require clone mode, disabled shared skills, and disabled
+SSH-agent forwarding in the local configuration. New sandboxes receive a host-only
+ownership receipt under `.local/sandboxes/`; reuse and removal compare the runtime
+ID, agent and workspace with that receipt. The `sbx ls --json` response must expose
+an `id`, `agent` and exactly one absolute workspace path. Unsupported metadata
+fails closed. This adapter still needs validation against the sbx version on Draco.
+
+Existing sandboxes without a receipt are **left intact and refused**, including by
+`handoff`. Preserve their work manually before migration; do not delete/recreate
+them or fabricate a receipt to bypass this check.
+
+`cleanup` without a target is preview-only. `cleanup NAME` accepts only a registered
+test sandbox, verifies its identity, and keeps sbx's native confirmation and
+active-session protection. Project sandboxes are never cleanup candidates.
 
 ## Commands
 
@@ -260,7 +282,8 @@ Automatic destruction is also blocked for repository states that currently need 
 .\sandbox.ps1 validate                   full local release gate
 .\sandbox.ps1 security-test              host-isolation checks
 .\sandbox.ps1 adversarial-test           credential/network/host probes
-.\sandbox.ps1 cleanup                    remove stale disposable test sandboxes
+.\sandbox.ps1 cleanup                    preview registered test sandboxes
+.\sandbox.ps1 cleanup NAME               remove one registered test sandbox
 .\sandbox.ps1 prepublish-audit           audit reachable Git history before release
 .\sandbox.ps1 server                     run llama-server manually
 ```

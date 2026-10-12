@@ -53,7 +53,20 @@ For fast dependency-free checks only:
 .\tests\static-tests.ps1
 ```
 
-GitHub-hosted CI runs syntax/JSON/static checks. The Docker Sandbox integration checks run locally because they require a real `sbx` environment.
+The static suite also runs `tests/security-regressions.ps1`: it mocks sbx in an
+isolated temporary fixture and uses Git locally, without creating any sandbox.
+
+On Linux, run the production shell guard against disposable Git repositories:
+
+```sh
+python3 tests/preservation-tests.py
+```
+
+This requires Python 3, Bash and Git, with no third-party Python packages.
+GitHub-hosted CI runs the PowerShell suite on Windows 5.1/7 and the Git guard tests
+on Linux. Docker Sandbox integration checks still run locally because they require
+a real `sbx` environment. Passing mock tests does not validate its JSON schema or
+the microVM boundary.
 
 ## Pull requests
 

@@ -4,6 +4,14 @@ OCBox is intentionally narrow: **OpenCode + local llama.cpp + Windows + Docker S
 
 The roadmap prioritizes a boring, testable host boundary before adding breadth.
 
+## Current security work
+
+The first preservation patch and its remaining gates are tracked in
+[preservation hardening](docs/preservation-hardening.md). Next priorities are
+network-policy reconciliation, sanitized project ingress and credential checks,
+quiescent handoff, then external llama.cpp router integration. The historical
+milestones below do not mean those audit findings are resolved.
+
 ## v0.1 — public release
 
 - [x] private clone instead of writable host worktree

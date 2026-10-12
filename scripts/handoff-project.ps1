@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "private\GitHandoff.ps1")
 
 $Config = Get-ToolConfig
+Assert-HardenedConfig -Config $Config
 Assert-Command "sbx"
 Assert-Command "git"
 
@@ -28,26 +29,36 @@ if ($Existing -notcontains $SandboxName) {
     throw "Sandbox non trovata: $SandboxName"
 }
 
-$SessionId = Get-HandoffSessionId
-Write-Host "Recupero sandbox esistente: $SandboxName" -ForegroundColor Cyan
-Write-Host "Creo snapshot Git nella microVM..." -ForegroundColor DarkGray
-$Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
+$null = Assert-ManagedSandbox -SandboxName $SandboxName -ProjectPath $ProjectPath
+$SavedSshAuthSock = $env:SSH_AUTH_SOCK
+Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue
+try {
+    $SessionId = Get-HandoffSessionId
+    Write-Host "Recupero sandbox esistente: $SandboxName" -ForegroundColor Cyan
+    Write-Host "Creo snapshot Git nella microVM..." -ForegroundColor DarkGray
+    $Snapshot = New-SandboxGitSnapshot -SandboxName $SandboxName -SessionId $SessionId
 
-Write-Host "Fetch sul host in refs/ocbox/..." -ForegroundColor DarkGray
-$Handoff = Export-SandboxGitHandoff -ProjectPath $ProjectPath -SandboxName $SandboxName -SessionId $SessionId -Snapshot $Snapshot
+    Write-Host "Fetch sul host in refs/ocbox/..." -ForegroundColor DarkGray
+    $Handoff = Export-SandboxGitHandoff -ProjectPath $ProjectPath -SandboxName $SandboxName -SessionId $SessionId -Snapshot $Snapshot
 
-Write-Host "Snapshot verificato: $($Handoff.SnapshotRef)" -ForegroundColor Green
-Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
-Write-Host "Distruggo la sandbox solo dopo la verifica..." -ForegroundColor DarkGray
-Remove-SandboxAfterHandoff -SandboxName $SandboxName -ProjectPath $ProjectPath -Handoff $Handoff
+    Write-Host "Snapshot verificato: $($Handoff.SnapshotRef)" -ForegroundColor Green
+    Write-Host "SHA: $($Handoff.SnapshotSha)" -ForegroundColor DarkGray
+    Write-Host "Distruggo la sandbox solo dopo la verifica..." -ForegroundColor DarkGray
+    Remove-SandboxAfterHandoff -SandboxName $SandboxName -ProjectPath $ProjectPath -Handoff $Handoff
 
-Write-Host ""
-Write-Host "GIT HANDOFF: PASS" -ForegroundColor Green
-Write-Host "  Snapshot: $($Handoff.SnapshotRef)" -ForegroundColor Green
-Write-Host "  SHA: $($Handoff.SnapshotSha)" -ForegroundColor Green
-Write-Host "  Sandbox distrutta: $SandboxName" -ForegroundColor Green
-Write-Host "  Working tree host: non modificato" -ForegroundColor Green
-Write-Host ""
-Write-Host "Ispeziona senza checkout:" -ForegroundColor Cyan
-Write-Host "  git -C `"$ProjectPath`" diff HEAD..$($Handoff.SnapshotRef)"
-Write-Host "  git -C `"$ProjectPath`" show $($Handoff.SnapshotRef):<file>"
+    Write-Host ""
+    Write-Host "GIT HANDOFF: PASS" -ForegroundColor Green
+    Write-Host "  Snapshot: $($Handoff.SnapshotRef)" -ForegroundColor Green
+    Write-Host "  SHA: $($Handoff.SnapshotSha)" -ForegroundColor Green
+    Write-Host "  Sandbox distrutta: $SandboxName" -ForegroundColor Green
+    Write-Host "  Working tree host: non modificato" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Ispeziona senza checkout:" -ForegroundColor Cyan
+    Write-Host "  git -C `"$ProjectPath`" diff HEAD..$($Handoff.SnapshotRef)"
+    Write-Host "  git -C `"$ProjectPath`" show $($Handoff.SnapshotRef):<file>"
+
+}
+finally {
+    if ($null -ne $SavedSshAuthSock) { $env:SSH_AUTH_SOCK = $SavedSshAuthSock }
+    else { Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue }
+}

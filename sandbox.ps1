@@ -15,7 +15,7 @@ switch ($Command) {
     "bootstrap" { & (Join-Path $Scripts "bootstrap.ps1") }
     "doctor" { & (Join-Path $Scripts "doctor.ps1") }
     "validate" { & (Join-Path $Scripts "validate.ps1") }
-    "cleanup" { & (Join-Path $Scripts "cleanup.ps1") }
+    "cleanup" { & (Join-Path $Scripts "cleanup.ps1") -SandboxName $Target }
     "server" { & (Join-Path $Scripts "start-llama.ps1") }
     "security-test" { & (Join-Path $Scripts "security-test.ps1") }
     "handoff-test" { & (Join-Path $Scripts "handoff-test.ps1") }
@@ -45,7 +45,7 @@ switch ($Command) {
         Write-Host "  .\sandbox.ps1 bootstrap                 configure this PC"
         Write-Host "  .\sandbox.ps1 doctor                    check local dependencies/config"
         Write-Host "  .\sandbox.ps1 validate                  run the full local release gate"
-        Write-Host "  .\sandbox.ps1 cleanup                   remove stale disposable test sandboxes"
+        Write-Host "  .\sandbox.ps1 cleanup [NAME]            preview / remove one registered test sandbox"
         Write-Host "  .\sandbox.ps1 security-test             verify host isolation"
         Write-Host "  .\sandbox.ps1 handoff-test              verify disposable Git handoff"
         Write-Host "  .\sandbox.ps1 adversarial-test          run controlled containment probes"
