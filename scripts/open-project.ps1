@@ -73,13 +73,17 @@ if ($Config.DisableSshAgentForwarding) {
 try {
     if (-not $ServerWasAlreadyRunning) {
         if ($NoAutoStartServer) {
-            Write-Warning "llama-server is not responding. Start it with: .\sandbox.ps1 server"
+            throw 'Local server is offline. Start your router, then retry.'
         }
         else {
+            if ($Config.ServerMode -eq 'external') { throw 'External router is offline. Start it with your normal command, then retry.' }
+            if (@(Get-LlamaListenerProcessIds -Port $Config.LlamaPort).Count -gt 0) { throw "Port $($Config.LlamaPort) is occupied by a service that did not return a valid model API." }
             $ServerLauncher = Start-LlamaWindowAndWait -Config $Config
         }
     }
 
+    Assert-LlamaModelAvailable -Config $Config
+    Assert-SbxSshDisabled
     $Existing = @(Get-SandboxNames)
     if ($Existing -notcontains $SandboxName) {
         if ($DemoMode) {
@@ -99,26 +103,11 @@ try {
             "--cpus", "$($Config.SandboxCpus)"
         )
         if ($Config.UseCloneMode) { $CreateArgs += "--clone" }
-        if ($Config.DisableSharedSkills) { $CreateArgs += "--no-share-skills" }
+        if ($Config.DisableSharedSkills) { $CreateArgs += "--skills=off" }
         $CreateArgs += @("opencode", $ProjectPath)
 
         $CreateStarted = Get-Date
-        if ($DemoMode) {
-            $Previous = $ErrorActionPreference
-            try {
-                $ErrorActionPreference = "Continue"
-                $CreateOutput = @(& sbx @CreateArgs 2>&1)
-                $CreateCode = $LASTEXITCODE
-            }
-            finally { $ErrorActionPreference = $Previous }
-            if ($CreateCode -ne 0) {
-                $CreateText = (($CreateOutput | ForEach-Object { "$($_)" }) -join "`n").Trim()
-                throw "Sandbox creation failed (exit $CreateCode): $CreateText"
-            }
-        }
-        else {
-            Invoke-External "sbx" $CreateArgs
-        }
+        Invoke-ExternalProgress 'sbx' $CreateArgs -Activity "Create OpenCode microVM $SandboxName"
         $Elapsed = (Get-Date) - $CreateStarted
         Write-Host ("Sandbox ready in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
     }
@@ -132,6 +121,8 @@ try {
     }
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
     Repair-And-VerifySandboxShell -Name $SandboxName
+    $SshProbe = Invoke-NativeCapture 'sbx' @('exec', $SandboxName, 'sh', '-lc', 'test -z "${SSH_AUTH_SOCK:-}" && test ! -S /run/ssh-agent.sock')
+    if ($SshProbe.Code -ne 0) { throw 'SSH agent socket detected in guest. Refusing to start OpenCode; sandbox preserved.' }
 
     Write-Host ""
     if ($DemoMode) {

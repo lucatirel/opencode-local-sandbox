@@ -1,5 +1,9 @@
 Set-StrictMode -Version 3.0
 
+. (Join-Path $PSScriptRoot 'Progress.ps1')
+. (Join-Path $PSScriptRoot 'Environment.ps1')
+. (Join-Path $PSScriptRoot 'Models.ps1')
+
 function Get-ToolRoot {
     return (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
@@ -25,6 +29,9 @@ function Get-ToolConfig {
         ModelFile                   = $ModelFile
         ModelAlias                  = $ModelAlias
         ModelDisplayName            = $ModelDisplayName
+        ServerMode                  = $ServerMode
+        ModelsDirectory             = $ModelsDirectory
+        ModelsPreset                = $ModelsPreset
         ProjectsRoot                = $ProjectsRoot
         SandboxPrefix               = $SandboxPrefix
         SandboxMemory               = $SandboxMemory
@@ -79,7 +86,7 @@ function Invoke-External {
     $PreviousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & $FilePath @ArgumentList
+        & $FilePath @ArgumentList 2>&1 | ForEach-Object { Write-Host "$_" }
         $Code = $LASTEXITCODE
     }
     finally {
@@ -280,6 +287,19 @@ function Write-GeneratedOpenCodeConfig {
         }
     }
 
+    if ($Config.PSObject.Properties['ServerMode'] -and $Config.ServerMode -eq 'router') {
+        foreach ($Preset in @(Read-LlamaPresets -Path $Config.ModelsPreset)) {
+            if ($Preset.Alias -eq $Config.ModelAlias) { continue }
+            $Models[$Preset.Alias] = [ordered]@{
+                name = $Preset.Alias
+                limit = [ordered]@{
+                    context = [int]$Preset.ContextSize
+                    output = [Math]::Min([int]$Config.OutputTokens, [int]$Preset.ContextSize - 1)
+                }
+            }
+        }
+    }
+
     $Document = [ordered]@{
         '$schema' = "https://opencode.ai/config.json"
         enabled_providers = @("agentbox-llama")
@@ -305,7 +325,8 @@ function Write-GeneratedOpenCodeConfig {
     $Directory = Join-Path $Config.ToolRoot ".local\generated\$SandboxName"
     New-Item -ItemType Directory -Force -Path $Directory | Out-Null
     $Path = Join-Path $Directory "opencode.json"
-    $Document | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
+    # UTF-8 without BOM also works with Linux JSON readers when launched on PS 5.1.
+    [IO.File]::WriteAllText($Path, ($Document | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
     return $Path
 }
 
@@ -346,6 +367,8 @@ function Install-SandboxConfiguration {
     Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
     Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/opencode") | Out-Null
     Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local.json", "/etc/opencode/opencode.json") | Out-Null
+    Write-Host 'OpenCode version inside the microVM:' -ForegroundColor Cyan
+    Invoke-External 'sbx' @('exec', $SandboxName, 'opencode', '--version') | Out-Null
 
     # OpenCode supports Claude Code compatibility by default. Disable it so a host
     # or project .claude instruction/skills tree cannot silently extend the agent
@@ -364,15 +387,10 @@ done
 function Test-LlamaApi {
     param([Parameter(Mandatory = $true)][int]$Port)
 
-    $Client = New-Object System.Net.Sockets.TcpClient
     try {
-        $Connect = $Client.BeginConnect("127.0.0.1", $Port, $null, $null)
-        if (-not $Connect.AsyncWaitHandle.WaitOne(3000, $false)) { return $false }
-        $Client.EndConnect($Connect)
-        return $Client.Connected
+        return @(Get-LlamaApiModels -Port $Port).Count -gt 0
     }
     catch { return $false }
-    finally { $Client.Dispose() }
 }
 
 function Stop-LlamaProcessTree {
@@ -417,18 +435,23 @@ function Start-LlamaWindowAndWait {
     $Launcher = Start-Process -FilePath "powershell.exe" -ArgumentList "-NoExit -ExecutionPolicy Bypass -File $QuotedScript" -PassThru
 
     $Deadline = (Get-Date).AddSeconds([int]$Config.ServerStartupTimeoutSeconds)
+    $Started = Get-Date
     Write-Host "Attendo che llama-server carichi il modello..." -ForegroundColor Cyan
     while ((Get-Date) -lt $Deadline) {
         if (Test-LlamaApi -Port ([int]$Config.LlamaPort)) {
+            Write-Progress -Id 24 -Activity 'Starting local model server' -Completed
             Write-Host "llama-server pronto." -ForegroundColor Green
             return [pscustomobject]@{
                 ProcessId = $Launcher.Id
                 Port      = [int]$Config.LlamaPort
             }
         }
+        if ($Launcher.HasExited) { throw 'The local server launcher exited before its model API became ready.' }
+        Write-Progress -Id 24 -Activity 'Starting local model server' -Status ("{0:n0}s elapsed | mode {1} | port {2}" -f ((Get-Date) - $Started).TotalSeconds, $Config.ServerMode, $Config.LlamaPort) -PercentComplete -1
         Start-Sleep -Seconds 2
     }
 
+    Write-Progress -Id 24 -Activity 'Starting local model server' -Completed
     Stop-LlamaProcessTree -ProcessId $Launcher.Id -Port ([int]$Config.LlamaPort)
     throw "llama-server non ha risposto entro $($Config.ServerStartupTimeoutSeconds) secondi."
 }

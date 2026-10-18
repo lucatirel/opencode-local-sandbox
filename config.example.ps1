@@ -8,6 +8,12 @@ $ModelFile = "model.gguf"
 $ModelAlias = "local-model"
 $ModelDisplayName = "Local GGUF model"
 
+# single: start one GGUF; router: start an existing models-preset INI;
+# external: reuse a server started separately (for example by your own alias).
+$ServerMode = 'single'
+$ModelsDirectory = '' # empty preserves the legacy llama.cpp\models location
+$ModelsPreset = ''
+
 $ProjectsRoot = Join-Path $env:USERPROFILE "Projects"
 $SandboxPrefix = "oc"
 $SandboxMemory = "6g"

@@ -75,10 +75,11 @@ You need:
 - Windows 11;
 - PowerShell 5.1 or PowerShell 7;
 - Git;
-- Docker Sandboxes CLI (`sbx`) and access to Docker Sandboxes;
-- an existing working `llama.cpp` Windows build;
-- `llama-server.exe` at `llama.cpp\build\bin\Release\llama-server.exe`;
-- at least one `.gguf` model under `llama.cpp\models`.
+- Docker Sandboxes CLI (`sbx`) 0.48.0 or later and a Docker account;
+- for managed single-model/router mode, an existing working `llama.cpp` Windows build with `llama-server.exe` at `build\bin\Release\llama-server.exe`;
+- an existing model preset/router, an external local model API, or a `.gguf` file (including weights outside the llama.cpp checkout).
+
+Local microVMs require Windows Hypervisor Platform. Docker Desktop is not required.
 
 OCBox deliberately does **not** vendor model weights or manage your llama.cpp build.
 
@@ -91,7 +92,21 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\sandbox.ps1 bootstrap
 ```
 
-`bootstrap` checks the local tooling, asks for your existing llama.cpp directory and GGUF model, writes machine-specific settings to ignored `config.local.ps1`, and runs diagnostics.
+`bootstrap` installs `sbx` with WinGet if missing, starts its daemon in the background, and opens Docker OAuth login when needed. It initializes a deny-by-default global network policy only on a fresh installation; existing global policies are preserved. OCBox continues to verify the effective per-sandbox policy before starting an agent.
+
+The hardened startup disables Docker's persistent `ssh.agentForwardingEnabled` setting and restarts the daemon only when that setting changes. This affects all local Docker sandboxes. On Windows, clearing `SSH_AUTH_SOCK` alone does not prevent the OpenSSH/1Password named-pipe fallback. A setting that remains enabled (for example because of an environment override) blocks startup. The guest is also checked for a forwarded SSH socket before OpenCode starts.
+
+Model setup detects a sibling `llama.cpp` checkout and a `*models*.ini` preset, imports model aliases and contexts, and offers a choice of default model. It also supports absolute GGUF paths and `LocalAI\models`. Machine-specific settings remain in ignored `config.local.ps1`; existing user tuning is preserved and a local backup is made before updating the managed settings block.
+
+To select your existing router and default model explicitly:
+
+```powershell
+.\sandbox.ps1 bootstrap -ServerMode router -ModelAlias your-alias
+```
+
+Use `-ModelsPreset 'C:\AI\llama.cpp\models.ini'` if discovery finds multiple presets. All aliases in that preset are available inside OpenCode. Context sizes come from the preset, including `[*]` inheritance; a smaller existing user limit is preserved. Configuring OpenCode's context limit does not change the server's actual context allocation.
+
+`open`, `new`, `server`, and `demo` also prepare missing tooling and first-run configuration automatically. Validation prepares Docker interactively before creating test microVMs, so network-policy and login prompts cannot get stranded in a background job.
 
 ### 3. Open a project
 
@@ -108,6 +123,8 @@ Or create a new one:
 ```
 
 Then use OpenCode normally. Inside the microVM it has broad local freedom.
+
+If the configured local server/router is already running, OCBox reuses it and leaves it running at exit. In `router` mode it can otherwise start llama.cpp with your existing `--models-preset`, one loaded model, and loopback binding. In `external` mode it requires you to start the server with your normal command (for example your own `mup` alias). OCBox validates `/v1/models` and the selected alias, rather than treating any open TCP port as a working model API.
 
 ### 4. Review what came back
 
@@ -164,6 +181,8 @@ A successful run ends with:
 ```text
 OCBOX VALIDATION: PASS
 ```
+
+Long image preparation shows an indeterminate progress bar, elapsed time, streamed CLI output, and a heartbeat every ten seconds. When available, it also reports measured growth and transfer rate of Docker Sandboxes' **shared image cache**. This is not a per-image download percentage: the total image size is unknown and concurrent operations may affect the shared counter. Native errors remain visible and are saved under ignored `.local\logs`; operations time out after 30 minutes rather than waiting indefinitely. Host probes and Git handoff display their numbered phases as well.
 
 Run the credential/host/network/Docker containment probes separately with:
 
@@ -276,6 +295,7 @@ Typical local overrides:
 ```powershell
 $LlamaRoot = 'C:\AI\llama.cpp'
 $ModelFile = 'my-model.gguf'
+$ModelsDirectory = 'C:\AI\weights' # optional; ModelFile may also be absolute
 $ProjectsRoot = 'C:\code'
 
 # Optional model/server tuning
@@ -284,6 +304,17 @@ $OutputTokens = 2048
 $SandboxMemory = '6g'
 $SandboxCpus = 6
 ```
+
+For a router:
+
+```powershell
+$ServerMode = 'router'
+$LlamaRoot = 'C:\AI\llama.cpp'
+$ModelsPreset = 'C:\AI\llama.cpp\models.ini'
+$ModelAlias = 'your-alias'
+```
+
+For an independently managed server, set `$ServerMode = 'external'`, `$LlamaPort`, `$ModelAlias`, and the context/output limits. No local GGUF or llama.cpp executable is required in external mode.
 
 The llama.cpp launch tuning in `config.example.ps1` is a reference preset, not a universal hardware recommendation.
 

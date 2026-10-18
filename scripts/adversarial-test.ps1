@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 
 Assert-Command "sbx"
 Assert-Command "git"
+Initialize-SbxEnvironment
 
 $Results = @()
 $ProbeIndex = 0
@@ -97,16 +98,14 @@ $HostDockerMarker = "ocbox-adversarial-$Nonce"
 New-Item -ItemType Directory -Force -Path $Repo | Out-Null
 $CanaryValue | Set-Content -LiteralPath $Canary -Encoding ASCII
 "adversarial test baseline" | Set-Content -LiteralPath (Join-Path $Repo "README.txt") -Encoding ASCII
-& git -C $Repo init -q
-& git -C $Repo add README.txt
-& git -C $Repo -c user.name="OCBox Adversarial Test" -c user.email="adversarial@localhost" commit -q -m "baseline"
-if ($LASTEXITCODE -ne 0) { throw "Could not create temporary Git repository." }
+Invoke-External "git" @("-C", $Repo, "init", "-q") | Out-Null
+Invoke-External "git" @("-C", $Repo, "add", "README.txt") | Out-Null
+Invoke-External "git" @("-C", $Repo, "-c", "user.name=OCBox Adversarial Test", "-c", "user.email=adversarial@localhost", "commit", "-q", "-m", "baseline") | Out-Null
 
 try {
     Write-Host "[1/3] Creating disposable sandbox: $Sandbox" -ForegroundColor Cyan
-    Write-Host "      sbx create may remain quiet for a while." -ForegroundColor DarkGray
     $Started = Get-Date
-    Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
+    Invoke-ExternalProgress "sbx" @("create", "--name", $Sandbox, "--clone", "--skills=off", "--cpus", "4", "--memory", "4g", "shell", $Repo) -Activity "Prepare test microVM $Sandbox"
     Write-Host ("      Sandbox ready in {0:n1}s." -f ((Get-Date) - $Started).TotalSeconds) -ForegroundColor DarkGray
 
     Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**:80,**:443") | Out-Null

@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 
 Assert-Command "git"
 Assert-Command "sbx"
+Initialize-SbxEnvironment
 
 $Config = Get-ToolConfig
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -67,7 +68,7 @@ New-Item -ItemType Directory -Path $DemoRoot | Out-Null
 & git -C $DemoRoot init -q
 if ($LASTEXITCODE -ne 0) { throw "Could not initialize demo repository." }
 & git -C $DemoRoot branch -M main
-& git -C $DemoRoot add README.md
+Invoke-External "git" @("-C", $DemoRoot, "add", "README.md") | Out-Null
 & git -C $DemoRoot -c user.name="OCBox Demo" -c user.email="demo@localhost" commit -q -m "Demo baseline"
 if ($LASTEXITCODE -ne 0) { throw "Could not create demo baseline commit." }
 
@@ -75,26 +76,7 @@ $Baseline = (& git -C $DemoRoot rev-parse HEAD).Trim()
 
 try {
     Write-Host "[1/2] Docker Sandbox preflight" -ForegroundColor Cyan
-    $Previous = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        $PreflightOut = @(& sbx create --name $PreflightSandbox --clone --no-share-skills opencode $DemoRoot 2>&1)
-        $PreflightCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $Previous
-    }
-
-    if ($PreflightCode -ne 0) {
-        $PreflightText = (($PreflightOut | ForEach-Object { "$($_)" }) -join "`n").Trim()
-        $Hint = if ($PreflightText -match '(?i)(token|unauthor|login\.docker\.com|jwks|registry|credential|sign.?in|session)') {
-            "Run 'sbx login', confirm Docker sign-in succeeds, then rerun '.\sandbox.ps1 demo'."
-        }
-        else {
-            "Fix the Docker Sandbox error below, then rerun '.\sandbox.ps1 demo'."
-        }
-        throw "Docker Sandbox preflight failed BEFORE recording.`n$Hint`n`n$PreflightText"
-    }
+    Invoke-ExternalProgress 'sbx' @('create', '--name', $PreflightSandbox, '--clone', '--skills=off', 'opencode', $DemoRoot) -Activity 'Prepare OpenCode demo image'
     Write-Host "      PASS  OpenCode sandbox template available" -ForegroundColor Green
 
     $Previous = $ErrorActionPreference

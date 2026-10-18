@@ -44,11 +44,17 @@ jobs:
 
       - name: Run functional tests on Windows PowerShell 5.1
         shell: powershell
-        run: .\tests\static-tests.ps1
+        run: |
+          .\tests\static-tests.ps1
+          .\tests\startup-tests.ps1
+          .\tests\progress-tests.ps1
 
       - name: Run functional tests on PowerShell 7
         shell: pwsh
-        run: .\tests\static-tests.ps1
+        run: |
+          .\tests\static-tests.ps1
+          .\tests\startup-tests.ps1
+          .\tests\progress-tests.ps1
 
       - name: Integration-test notice
         shell: pwsh

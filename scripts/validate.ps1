@@ -3,6 +3,9 @@ param()
 
 $ErrorActionPreference = "Stop"
 $ToolRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'private/Common.ps1')
+$StepIndex = 0
+$StepTotal = 6
 
 function Invoke-ValidationStep {
     param(
@@ -11,64 +14,15 @@ function Invoke-ValidationStep {
     )
 
     Write-Host ""
-    Write-Host "==> $Name" -ForegroundColor Cyan
+    $script:StepIndex++
+    Write-Progress -Id 10 -Activity 'OCBox validation' -Status ("[{0}/{1}] {2}" -f $script:StepIndex, $script:StepTotal, $Name) -PercentComplete ([int](100 * ($script:StepIndex - 1) / $script:StepTotal))
+    Write-Host ("==> [{0}/{1}] {2}" -f $script:StepIndex, $script:StepTotal, $Name) -ForegroundColor Cyan
     $Started = Get-Date
-    & $Action
-    $Elapsed = (Get-Date) - $Started
-    Write-Host ("PASS: {0} ({1:n1}s)" -f $Name, $Elapsed.TotalSeconds) -ForegroundColor Green
-}
-
-function Receive-ValidationJobOutput {
-    param([Parameter(Mandatory = $true)]$Job)
-
-    # Docker Sandbox writes normal progress/status messages to stderr. When a
-    # child PowerShell job serializes those records back to a parent running
-    # with ErrorActionPreference=Stop, Receive-Job can incorrectly turn a
-    # successful native command into a terminating NativeCommandError.
-    # Real script failures still transition the job to Failed and are handled
-    # explicitly by Invoke-LongValidationScript below.
-    Receive-Job -Job $Job -ErrorAction SilentlyContinue
-}
-
-function Invoke-LongValidationScript {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$ScriptPath
-    )
-
-    Write-Host ""
-    Write-Host "==> $Name" -ForegroundColor Cyan
-    Write-Host "    This step creates a disposable Docker Sandbox microVM." -ForegroundColor DarkGray
-    Write-Host "    Long sbx operations may be quiet; OCBox prints a heartbeat every 30s." -ForegroundColor DarkGray
-
-    $Started = Get-Date
-    $Job = Start-Job -ScriptBlock {
-        param($Path, $WorkingDirectory)
-        Set-Location -LiteralPath $WorkingDirectory
-        & $Path
-    } -ArgumentList $ScriptPath, (Get-Location).Path
-
-    try {
-        while ($Job.State -eq "Running") {
-            $null = Wait-Job -Job $Job -Timeout 30
-            Receive-ValidationJobOutput -Job $Job
-            if ($Job.State -eq "Running") {
-                $ElapsedNow = (Get-Date) - $Started
-                Write-Host ("    ...still running ({0:n0}s elapsed)" -f $ElapsedNow.TotalSeconds) -ForegroundColor DarkGray
-            }
-        }
-
-        Receive-ValidationJobOutput -Job $Job
-        if ($Job.State -ne "Completed") {
-            $Reason = $Job.ChildJobs[0].JobStateInfo.Reason
-            if ($null -ne $Reason) { throw $Reason }
-            throw "$Name failed in background job state: $($Job.State)"
-        }
+    try { & $Action }
+    catch {
+        Write-Progress -Id 10 -Activity 'OCBox validation' -Completed
+        throw
     }
-    finally {
-        Remove-Job -Job $Job -Force -ErrorAction SilentlyContinue
-    }
-
     $Elapsed = (Get-Date) - $Started
     Write-Host ("PASS: {0} ({1:n1}s)" -f $Name, $Elapsed.TotalSeconds) -ForegroundColor Green
 }
@@ -108,10 +62,16 @@ Invoke-ValidationStep "Versioned JSON" {
 
 Invoke-ValidationStep "Dependency-free functional tests" {
     & (Join-Path $ToolRoot "tests\static-tests.ps1")
+    & (Join-Path $ToolRoot 'tests/startup-tests.ps1')
+    & (Join-Path $ToolRoot 'tests/progress-tests.ps1')
 }
 
-Invoke-LongValidationScript "Host isolation" (Join-Path $PSScriptRoot "security-test.ps1")
-Invoke-LongValidationScript "Disposable Git handoff" (Join-Path $PSScriptRoot "handoff-test.ps1")
+# All interactive setup runs on the host. Individual long native operations
+# stream their output/progress through Invoke-ExternalProgress, including stderr.
+Invoke-ValidationStep 'Docker Sandbox setup' { Initialize-SbxEnvironment }
+Invoke-ValidationStep 'Host isolation' { & (Join-Path $PSScriptRoot 'security-test.ps1') }
+Invoke-ValidationStep 'Disposable Git handoff' { & (Join-Path $PSScriptRoot 'handoff-test.ps1') }
+Write-Progress -Id 10 -Activity 'OCBox validation' -Completed
 
 Write-Host ""
 Write-Host "OCBOX VALIDATION: PASS" -ForegroundColor Green

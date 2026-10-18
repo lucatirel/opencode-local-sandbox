@@ -5,14 +5,29 @@ param(
     [string]$Command = "help",
 
     [Parameter(Position = 1)]
-    [string]$Target
+    [string]$Target,
+
+    [string]$ModelAlias,
+    [string]$ModelsPreset,
+    [ValidateSet('single', 'router', 'external')][string]$ServerMode
 )
 
 $ErrorActionPreference = "Stop"
 $Scripts = Join-Path $PSScriptRoot "scripts"
 
+# Resolve first-run prompts on the interactive host, before jobs or agents.
+if ($Command -in @('open', 'new', 'server', 'demo', 'security-test', 'handoff-test', 'adversarial-test')) {
+    & (Join-Path $Scripts 'prepare.ps1') -ConfigureModel:($Command -in @('open', 'new', 'server', 'demo'))
+}
+
 switch ($Command) {
-    "bootstrap" { & (Join-Path $Scripts "bootstrap.ps1") }
+    "bootstrap" {
+        $Options = @{}
+        foreach ($Key in @('ModelAlias', 'ModelsPreset', 'ServerMode')) {
+            if ($PSBoundParameters.ContainsKey($Key)) { $Options[$Key] = $PSBoundParameters[$Key] }
+        }
+        & (Join-Path $Scripts "bootstrap.ps1") @Options
+    }
     "doctor" { & (Join-Path $Scripts "doctor.ps1") }
     "validate" { & (Join-Path $Scripts "validate.ps1") }
     "cleanup" { & (Join-Path $Scripts "cleanup.ps1") }
@@ -43,6 +58,7 @@ switch ($Command) {
         Write-Host "OCBox - OpenCode Local Sandbox" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  .\sandbox.ps1 bootstrap                 configure this PC"
+        Write-Host "  .\sandbox.ps1 bootstrap -ServerMode router -ModelAlias <alias>"
         Write-Host "  .\sandbox.ps1 doctor                    check local dependencies/config"
         Write-Host "  .\sandbox.ps1 validate                  run the full local release gate"
         Write-Host "  .\sandbox.ps1 cleanup                   remove stale disposable test sandboxes"

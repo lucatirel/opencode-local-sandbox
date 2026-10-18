@@ -6,7 +6,16 @@ $ErrorActionPreference = "Stop"
 
 $Config = Get-ToolConfig
 $ServerExe = Join-Path $Config.LlamaRoot "build\bin\Release\llama-server.exe"
-$ModelPath = Join-Path $Config.LlamaRoot "models\$($Config.ModelFile)"
+if ($Config.ServerMode -eq 'external') {
+    if (Test-LlamaApi -Port $Config.LlamaPort) { Assert-LlamaModelAvailable -Config $Config; return }
+    throw 'External server is offline. Start your local router with your normal command, then retry.'
+}
+if (Test-LlamaApi -Port $Config.LlamaPort) {
+    Assert-LlamaModelAvailable -Config $Config
+    Write-Host 'Reusing the existing local server/router.' -ForegroundColor Green
+    return
+}
+$ModelPath = if ($Config.ServerMode -eq 'router') { $Config.ModelsPreset } else { Resolve-LlamaModelPath -Config $Config }
 
 foreach ($RequiredFile in @($ServerExe, $ModelPath)) {
     if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
@@ -36,6 +45,11 @@ $Arguments = @(
     "--cors-origins", "localhost",
     "--no-cors-credentials"
 )
+
+if ($Config.ServerMode -eq 'router') {
+    $Arguments = @('--models-preset', $Config.ModelsPreset, '--models-max', '1', '--models-autoload', '--host', '127.0.0.1', '--port', "$($Config.LlamaPort)")
+    Set-Location -LiteralPath $Config.LlamaRoot
+}
 
 Write-Host ""
 Write-Host "Avvio llama-server" -ForegroundColor Cyan

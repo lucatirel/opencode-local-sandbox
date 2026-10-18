@@ -15,12 +15,20 @@ function Assert-True {
 # success. This specifically protects Windows PowerShell 5.1 callers running with
 # ErrorActionPreference=Stop, which otherwise may promote such output to a
 # terminating NativeCommandError.
-$NativeStderrCode = Invoke-External "cmd.exe" @("/d", "/s", "/c", "echo OCBOX_STDERR_PROBE 1>&2 & exit /b 0") 2>$null
+$ProbeExe = 'cmd.exe'
+$ProbeOk = @('/d', '/s', '/c', 'echo OCBOX_STDERR_PROBE 1>&2 & exit /b 0')
+$ProbeFail = @('/d', '/s', '/c', 'exit /b 7')
+if ($env:OS -ne 'Windows_NT') {
+    $ProbeExe = '/bin/sh'
+    $ProbeOk = @('-c', 'echo OCBOX_STDERR_PROBE >&2; exit 0')
+    $ProbeFail = @('-c', 'exit 7')
+}
+$NativeStderrCode = Invoke-External $ProbeExe $ProbeOk 2>$null
 Assert-Equal 0 $NativeStderrCode "Invoke-External must tolerate stderr when the native exit code is zero."
 
 $NativeFailureObserved = $false
 try {
-    Invoke-External "cmd.exe" @("/d", "/s", "/c", "exit /b 7") 2>$null | Out-Null
+    Invoke-External $ProbeExe $ProbeFail 2>$null | Out-Null
 }
 catch {
     $NativeFailureObserved = $true
@@ -30,9 +38,9 @@ Assert-True $NativeFailureObserved "Invoke-External must still fail on a non-zer
 # successful static-test script does not itself return failure to CI.
 $global:LASTEXITCODE = 0
 
-$First = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
-$FirstAgain = Get-ProjectSandboxName -ProjectPath "C:\Projects\Alpha App" -Prefix "oc"
-$Second = Get-ProjectSandboxName -ProjectPath "D:\Work\Alpha App" -Prefix "oc"
+$First = Get-ProjectSandboxName -ProjectPath (Join-Path ([IO.Path]::GetTempPath()) "ocbox-test-a/Alpha App") -Prefix "oc"
+$FirstAgain = Get-ProjectSandboxName -ProjectPath (Join-Path ([IO.Path]::GetTempPath()) "ocbox-test-a/Alpha App") -Prefix "oc"
+$Second = Get-ProjectSandboxName -ProjectPath (Join-Path ([IO.Path]::GetTempPath()) "ocbox-test-b/Alpha App") -Prefix "oc"
 
 Assert-Equal $First $FirstAgain "The same path must produce the same sandbox name."
 Assert-True ($First -ne $Second) "Different paths with the same leaf name must produce different sandbox names."
@@ -90,14 +98,14 @@ Assert-True ($HandoffSource -match 'OCBOX_IGNOREDFILES') "Ignored files must blo
 
 $OpenSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\open-project.ps1") -Raw
 Assert-True ($OpenSource -match '--clone') "The hardened workflow must use clone mode."
-Assert-True ($OpenSource -match '--no-share-skills') "The hardened workflow must disable shared skills."
+Assert-True ($OpenSource -match '--skills=off') "The hardened workflow must disable shared skills."
 Assert-True ($OpenSource -match 'Remove-SandboxAfterHandoff') "Sandbox destruction must happen only through verified handoff."
 Assert-True ($OpenSource -match 'CallerLocation') "Open must restore the caller's directory after the session."
 
 $BootstrapSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\bootstrap.ps1") -Raw
 Assert-True ($BootstrapSource -notmatch 'mkcert') "mkcert must not be a dependency."
-Assert-True ($BootstrapSource -match '\$ErrorActionPreference = "Continue"') "The sbx probe must tolerate informational stderr on Windows PowerShell 5.1."
-Assert-True ($BootstrapSource -match 'OCBox does not build it') "Bootstrap must keep llama.cpp build management outside OCBox."
+Assert-True ($BootstrapSource -match 'Initialize-SbxEnvironment') "Bootstrap must prepare daemon, login, networking and SSH protection."
+Assert-True ($BootstrapSource -match 'Initialize-OcboxModelConfig') "Bootstrap must configure the local model/router."
 
 $NewSource = Get-Content -LiteralPath (Join-Path $ToolRoot "scripts\new-project.ps1") -Raw
 Assert-True ($NewSource -match 'README\.md') "New projects must create a minimal tracked file."

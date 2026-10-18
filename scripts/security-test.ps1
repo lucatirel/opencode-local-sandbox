@@ -6,8 +6,12 @@ $ErrorActionPreference = "Stop"
 
 Assert-Command "sbx"
 Assert-Command "git"
+Initialize-SbxEnvironment
 
 function Add-Check($Name, $Ok, $Detail) {
+    $Number = $script:Results.Count + 1
+    Write-Progress -Id 22 -Activity 'Host isolation probes' -Status ("[{0}/12] {1}" -f $Number, $Name) -PercentComplete ([Math]::Min(100, [int](100 * $Number / 12)))
+    Write-Host ("  [{0}/12] {1}: {2}" -f $Number, $Name, $(if ($Ok) { 'PASS' } else { 'FAIL' })) -ForegroundColor $(if ($Ok) { 'Green' } else { 'Red' })
     $script:Results += [pscustomobject]@{
         Result = if ($Ok) { "PASS" } else { "FAIL" }
         Check = $Name
@@ -105,16 +109,15 @@ $DockerMarker = "ocbox-inner-$Nonce"
 New-Item -ItemType Directory -Force -Path $Repo | Out-Null
 $CanaryValue | Set-Content -LiteralPath $Canary -Encoding ASCII
 "safe baseline" | Set-Content -LiteralPath (Join-Path $Repo "README.txt") -Encoding ASCII
-& git -C $Repo init -q
-& git -C $Repo add README.txt
-& git -C $Repo -c user.name="OCBox Security Test" -c user.email="security-test@localhost" commit -q -m "baseline"
-if ($LASTEXITCODE -ne 0) { throw "Impossibile creare il repository Git temporaneo." }
+Invoke-External "git" @("-C", $Repo, "init", "-q") | Out-Null
+Invoke-External "git" @("-C", $Repo, "add", "README.txt") | Out-Null
+Invoke-External "git" @("-C", $Repo, "-c", "user.name=OCBox Security Test", "-c", "user.email=security-test@localhost", "commit", "-q", "-m", "baseline") | Out-Null
 
 try {
     Remove-Item Env:SSH_AUTH_SOCK -ErrorAction SilentlyContinue
 
     Write-Host "Creo microVM usa-e-getta: $Sandbox" -ForegroundColor Cyan
-    Invoke-External "sbx" @("create", "--name", $Sandbox, "--clone", "--no-share-skills", "shell", $Repo) | Out-Null
+    Invoke-ExternalProgress "sbx" @("create", "--name", $Sandbox, "--clone", "--skills=off", "--cpus", "4", "--memory", "4g", "shell", $Repo) -Activity "Prepare test microVM $Sandbox"
 
     # Strong public-web candidate: allow arbitrary destinations only on the two
     # standard web ports. This still covers normal browser/package-manager/HTTPS
@@ -138,8 +141,8 @@ try {
     }
     Add-Check "Public web 80/443 policy" ($PublicMisses.Count -eq 0) $(if ($PublicMisses.Count -eq 0) { $PublicDetails -join "; " } else { "NOT ALLOWED: " + ($PublicMisses -join ", ") })
 
-    $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsSI --max-time 10 https://example.com | head -n 1")
-    Add-Check "Arbitrary HTTPS Internet" ($R.Code -eq 0) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
+    $R = Run-Sbx $Sandbox @("sh", "-lc", "curl -fsS --max-time 10 -o /dev/null -w '%{http_code}' https://example.com")
+    Add-Check "Arbitrary HTTPS Internet" (($R.Code -eq 0) -and ($R.Text -match '^2[0-9][0-9]$')) $(if ($R.Text) { $R.Text } else { "exit=$($R.Code)" })
 
     $PolicyTargets = @("10.0.0.1:80", "172.16.0.1:80", "192.168.0.1:80", "192.168.1.1:80", "100.64.0.1:80", "169.254.169.254:80")
     $PolicyMisses = @()
@@ -192,7 +195,9 @@ try {
     Add-Check "Host file outside workspace inaccessible" (-not $Leak) $(if ($Leak) { "LEAK: $LeakAt" } else { "host canary not readable" })
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", 'printf "%s" "${SSH_AUTH_SOCK:-}"')
-    Add-Check "Host SSH agent not forwarded" ([string]::IsNullOrWhiteSpace($R.Text)) $(if ($R.Text) { "SSH_AUTH_SOCK=$($R.Text)" } else { "SSH_AUTH_SOCK empty" })
+    $Setting = Invoke-NativeCapture 'sbx' @('settings', 'get', 'ssh.agentForwardingEnabled')
+    $SocketProbe = Run-Sbx $Sandbox @('sh', '-lc', 'test ! -S /run/ssh-agent.sock')
+    Add-Check "Host SSH agent not forwarded" (($R.Code -eq 0) -and [string]::IsNullOrWhiteSpace($R.Text) -and $SocketProbe.Code -eq 0 -and $Setting.Code -eq 0 -and $Setting.Text.Trim() -eq 'false') $(if ($R.Text) { "SSH_AUTH_SOCK=$($R.Text)" } else { "SSH_AUTH_SOCK empty" })
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "docker volume create $DockerMarker")
     $InnerDockerOk = ($R.Code -eq 0)
@@ -224,6 +229,7 @@ try {
     }
 }
 finally {
+    Write-Progress -Id 22 -Activity 'Host isolation probes' -Completed
     Write-Host "Distruggo la microVM di test..." -ForegroundColor Cyan
     $Old = $ErrorActionPreference
     try {
