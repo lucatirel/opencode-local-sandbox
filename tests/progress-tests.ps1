@@ -1,10 +1,14 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../scripts/private/Common.ps1')
 $Exe = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' } elseif ($env:OS -eq 'Windows_NT') { 'pwsh.exe' } else { 'pwsh' })
-Invoke-ExternalProgress $Exe @('-NoLogo', '-NoProfile', '-Command', '[Console]::Error.WriteLine("OCBOX_NATIVE_STDERR"); exit 0') -Activity 'Progress regression: successful native stderr'
+# Windows PowerShell's legacy native argument passing strips embedded quotes.
+# Encode these probe scripts so the test exercises native stderr, not CLI quoting.
+$SuccessProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('[Console]::Error.WriteLine("OCBOX_NATIVE_STDERR"); exit 0'))
+$FailureProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('[Console]::Error.WriteLine("OCBOX_ORIGINAL_FAILURE"); exit 7'))
+Invoke-ExternalProgress $Exe @('-NoLogo', '-NoProfile', '-EncodedCommand', $SuccessProbe) -Activity 'Progress regression: successful native stderr'
 $Observed = $false
 try {
-    Invoke-ExternalProgress $Exe @('-NoLogo', '-NoProfile', '-Command', '[Console]::Error.WriteLine("OCBOX_ORIGINAL_FAILURE"); exit 7') -Activity 'Progress regression: failed native command'
+    Invoke-ExternalProgress $Exe @('-NoLogo', '-NoProfile', '-EncodedCommand', $FailureProbe) -Activity 'Progress regression: failed native command'
 }
 catch {
     $Observed = $_.Exception.Message -match 'exit 7' -and $_.Exception.Message -match 'OCBOX_ORIGINAL_FAILURE'
