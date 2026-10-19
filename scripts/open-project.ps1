@@ -121,8 +121,8 @@ try {
     }
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
     Repair-And-VerifySandboxShell -Name $SandboxName
-    $SshProbe = Invoke-NativeCapture 'sbx' @('exec', $SandboxName, 'sh', '-lc', 'test -z "${SSH_AUTH_SOCK:-}" && test ! -S /run/ssh-agent.sock')
-    if ($SshProbe.Code -ne 0) { throw 'SSH agent socket detected in guest. Refusing to start OpenCode; sandbox preserved.' }
+    $SshState = Get-SandboxSshIsolationStatus -SandboxName $SandboxName
+    if (-not $SshState.Isolated) { throw "SSH isolation could not be verified. Refusing to start OpenCode; sandbox preserved. $($SshState.Detail)" }
 
     Write-Host ""
     if ($DemoMode) {

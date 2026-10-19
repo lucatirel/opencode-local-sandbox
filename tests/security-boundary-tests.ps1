@@ -83,9 +83,52 @@ try {
     Assert-Boundary ($script:BoundaryDecisions['registry.npmjs.org:443'] -eq 'allow') 'Explicit restricted-mode exception was lost.'
     $script:InheritedBoundaryWeb = $true
     Assert-BoundaryFailure { Assert-EffectiveSandboxNetworkPolicy -Config $BoundaryConfig -SandboxName 'test' } 'Restricted mode accepted an inherited Internet allow.'
+
+    # A template's inert default variable is not an SSH forwarding endpoint.
+    # Keep real endpoints, alternate paths, gateway/PID forwarding and unknown
+    # settings blocked, including inconsistent successful native exit codes.
+    $script:SshSettingCode = 0
+    $script:SshSettingText = 'false'
+    $script:SshGuestCode = 0
+    $script:SshGuestText = 'env=unset;endpoint=absent;gateway=absent;pid=absent'
+    function Invoke-NativeCapture {
+        param($FilePath, $ArgumentList)
+        if ($ArgumentList[0] -eq 'settings') {
+            return [pscustomobject]@{ Code = $script:SshSettingCode; Text = $script:SshSettingText }
+        }
+        return [pscustomobject]@{ Code = $script:SshGuestCode; Text = $script:SshGuestText }
+    }
+    Assert-Boundary (Get-SandboxSshIsolationStatus 'test').Isolated 'An unset SSH variable with no endpoint was rejected.'
+    $script:SshGuestText = 'env=default;endpoint=absent;gateway=absent;pid=absent'
+    $InertDefault = Get-SandboxSshIsolationStatus 'test'
+    Assert-Boundary $InertDefault.Isolated 'An inert default SSH path was mistaken for a forwarded agent.'
+    Assert-Boundary ($InertDefault.Detail -match 'forwarding=false.*endpoint=absent') 'SSH diagnostics must explain the isolation evidence.'
+    foreach ($Diagnostic in @(
+        'env=default;endpoint=present;gateway=absent;pid=absent',
+        'env=unset;endpoint=present;gateway=absent;pid=absent',
+        'env=unexpected;endpoint=absent;gateway=absent;pid=absent',
+        'env=default;endpoint=unreadable;gateway=absent;pid=absent',
+        'env=default;endpoint=absent;gateway=present;pid=absent',
+        'env=default;endpoint=absent;gateway=absent;pid=present',
+        'unexpected diagnostic output'
+    )) {
+        $script:SshGuestText = $Diagnostic
+        Assert-Boundary (-not (Get-SandboxSshIsolationStatus 'test').Isolated) "Unsafe SSH state was accepted: $Diagnostic"
+    }
+    $script:SshGuestText = 'env=default;endpoint=absent;gateway=absent;pid=absent'
+    $script:SshGuestCode = 7
+    Assert-Boundary (-not (Get-SandboxSshIsolationStatus 'test').Isolated) 'A failed guest probe must fail closed.'
+    $script:SshGuestCode = 0
+    foreach ($Setting in @('true', 'unknown')) {
+        $script:SshSettingText = $Setting
+        Assert-Boundary (-not (Get-SandboxSshIsolationStatus 'test').Isolated) 'Enabled/unknown host forwarding was accepted.'
+    }
+    $script:SshSettingText = 'false'
+    $script:SshSettingCode = 7
+    Assert-Boundary (-not (Get-SandboxSshIsolationStatus 'test').Isolated) 'An unreadable host forwarding setting must fail closed.'
 }
 finally {
-    foreach ($Name in @('Get-SandboxNames', 'sbx', 'Get-SandboxNetworkDecision')) {
+    foreach ($Name in @('Get-SandboxNames', 'sbx', 'Get-SandboxNetworkDecision', 'Invoke-NativeCapture')) {
         Remove-Item "Function:$Name" -ErrorAction SilentlyContinue
     }
     . (Join-Path $PSScriptRoot '../scripts/private/Common.ps1')

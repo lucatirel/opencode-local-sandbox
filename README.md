@@ -96,6 +96,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The hardened startup disables Docker's persistent `ssh.agentForwardingEnabled` setting and restarts the daemon only when that setting changes. This affects all local Docker sandboxes. On Windows, clearing `SSH_AUTH_SOCK` alone does not prevent the OpenSSH/1Password named-pipe fallback. A setting that remains enabled (for example because of an environment override) blocks startup. The guest is also checked for a forwarded SSH socket before OpenCode starts.
 
+The guest SSH check reports the host setting, default endpoint presence, and gateway/PID indicators separately. An unset `SSH_AUTH_SOCK`, or exactly `/run/ssh-agent.sock` with no file/socket/symlink at that path, is accepted only when host forwarding is disabled and the gateway/PID indicators are empty. Actual endpoints, alternate paths, unreadable state, and failed probes block startup. The check never removes a socket or clears a variable to obtain a pass.
+
 Model setup detects a sibling `llama.cpp` checkout and a `*models*.ini` preset, imports model aliases and contexts, and offers a choice of default model. It also supports absolute GGUF paths and `LocalAI\models`. Machine-specific settings remain in ignored `config.local.ps1`; existing user tuning is preserved and a local backup is made before updating the managed settings block.
 
 To select your existing router and default model explicitly:

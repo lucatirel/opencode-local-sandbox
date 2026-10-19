@@ -194,10 +194,8 @@ try {
     }
     Add-Check "Host file outside workspace inaccessible" (-not $Leak) $(if ($Leak) { "LEAK: $LeakAt" } else { "host canary not readable" })
 
-    $R = Run-Sbx $Sandbox @("sh", "-lc", 'printf "%s" "${SSH_AUTH_SOCK:-}"')
-    $Setting = Invoke-NativeCapture 'sbx' @('settings', 'get', 'ssh.agentForwardingEnabled')
-    $SocketProbe = Run-Sbx $Sandbox @('sh', '-lc', 'test ! -S /run/ssh-agent.sock')
-    Add-Check "Host SSH agent not forwarded" (($R.Code -eq 0) -and [string]::IsNullOrWhiteSpace($R.Text) -and $SocketProbe.Code -eq 0 -and $Setting.Code -eq 0 -and $Setting.Text.Trim() -eq 'false') $(if ($R.Text) { "SSH_AUTH_SOCK=$($R.Text)" } else { "SSH_AUTH_SOCK empty" })
+    $SshState = Get-SandboxSshIsolationStatus -SandboxName $Sandbox
+    Add-Check "Host SSH agent not forwarded" $SshState.Isolated $SshState.Detail
 
     $R = Run-Sbx $Sandbox @("sh", "-lc", "docker volume create $DockerMarker")
     $InnerDockerOk = ($R.Code -eq 0)

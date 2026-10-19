@@ -45,6 +45,48 @@ function Assert-SbxSshDisabled {
     }
 }
 
+function Get-SandboxSshIsolationStatus {
+    param([Parameter(Mandatory = $true)][string]$SandboxName)
+
+    $Setting = Invoke-NativeCapture 'sbx' @('settings', 'get', 'ssh.agentForwardingEnabled')
+    # Some templates export the default path even when no endpoint exists.
+    # Accept only that exact inert default (or an unset variable), with the
+    # persistent host setting disabled and no gateway/PID/endpoint. Never remove
+    # a socket or unset variables to make this security probe pass.
+    # Avoid embedded double quotes: Windows PowerShell 5.1 strips them from
+    # native arguments. All diagnostic values below are fixed, non-secret words.
+    $ProbeScript = @'
+case ${SSH_AUTH_SOCK-} in
+  '') env_state=unset ;;
+  /run/ssh-agent.sock) env_state=default ;;
+  *) env_state=unexpected ;;
+esac
+endpoint=absent
+if test ! -d /run || test ! -r /run || test ! -x /run; then
+  endpoint=unreadable
+elif test -e /run/ssh-agent.sock || test -L /run/ssh-agent.sock; then
+  endpoint=present
+fi
+gateway=${SSH_AUTH_SOCK_GATEWAY:+present}
+gateway=${gateway:-absent}
+pid_state=${SSH_AGENT_PID:+present}
+pid_state=${pid_state:-absent}
+printf 'env=%s;endpoint=%s;gateway=%s;pid=%s\n' $env_state $endpoint $gateway $pid_state
+test $env_state != unexpected && test $endpoint = absent && test $gateway = absent && test $pid_state = absent
+'@
+    $ProbeScript = $ProbeScript.Replace("`r`n", "`n").Replace("`r", "")
+    $Guest = Invoke-NativeCapture 'sbx' @('exec', $SandboxName, 'sh', '-lc', $ProbeScript)
+    $KnownDiagnostic = $Guest.Text.Trim() -match '^env=(unset|default|unexpected);endpoint=(absent|present|unreadable);gateway=(absent|present);pid=(absent|present)$'
+    $Forwarding = if ($Setting.Text.Trim() -in @('true', 'false')) { $Setting.Text.Trim() } else { 'unknown' }
+    $Isolated = $Setting.Code -eq 0 -and $Forwarding -eq 'false' -and $Guest.Code -eq 0 -and
+        $Guest.Text.Trim() -match '^env=(unset|default);endpoint=absent;gateway=absent;pid=absent$'
+    $Diagnostic = if ($KnownDiagnostic) { $Guest.Text.Trim() } else { 'unrecognized guest diagnostic output' }
+    return [pscustomobject]@{
+        Isolated = [bool]$Isolated
+        Detail = "forwarding=$Forwarding;setting_exit=$($Setting.Code);guest_exit=$($Guest.Code);$Diagnostic"
+    }
+}
+
 function Initialize-SbxEnvironment {
     Install-SbxIfMissing
     Write-Host '[1/4] Docker Sandboxes daemon' -ForegroundColor Cyan

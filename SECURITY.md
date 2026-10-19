@@ -52,6 +52,8 @@ The hardened default profile uses:
 
 Agent startup refuses local settings that disable clone mode, shared-skills protection, or SSH-agent protection. It also refuses to resume an existing VM by name because current creation flags cannot certify its original mounts. Existing work is preserved for explicit Git handoff.
 
+SSH verification distinguishes a template's inert default `SSH_AUTH_SOCK=/run/ssh-agent.sock` from a real forwarding endpoint. It requires the host forwarding setting to be false, the default path to have no file/socket/symlink in a readable `/run`, and no nonempty SSH gateway/PID indicators. Unrecognized paths or probe failures remain blocked. The verification is shared by startup and the integration test and does not delete sockets or hide environment variables.
+
 The read-only source view is still readable, including ignored/untracked secrets. Use a sanitized source repository. Clone mode is an integrity control, not a source-confidentiality control.
 
 ## Why not `allow **`?
