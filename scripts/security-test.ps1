@@ -10,8 +10,8 @@ Initialize-SbxEnvironment
 
 function Add-Check($Name, $Ok, $Detail) {
     $Number = $script:Results.Count + 1
-    Write-Progress -Id 22 -Activity 'Host isolation probes' -Status ("[{0}/12] {1}" -f $Number, $Name) -PercentComplete ([Math]::Min(100, [int](100 * $Number / 12)))
-    Write-Host ("  [{0}/12] {1}: {2}" -f $Number, $Name, $(if ($Ok) { 'PASS' } else { 'FAIL' })) -ForegroundColor $(if ($Ok) { 'Green' } else { 'Red' })
+    Write-Progress -Id 22 -Activity 'Host isolation probes' -Status ("[{0}/13] {1}" -f $Number, $Name) -PercentComplete ([Math]::Min(100, [int](100 * $Number / 13)))
+    Write-Host ("  [{0}/13] {1}: {2}" -f $Number, $Name, $(if ($Ok) { 'PASS' } else { 'FAIL' })) -ForegroundColor $(if ($Ok) { 'Green' } else { 'Red' })
     $script:Results += [pscustomobject]@{
         Result = if ($Ok) { "PASS" } else { "FAIL" }
         Check = $Name
@@ -119,14 +119,14 @@ try {
     Write-Host "Creo microVM usa-e-getta: $Sandbox" -ForegroundColor Cyan
     Invoke-ExternalProgress "sbx" @("create", "--name", $Sandbox, "--clone", "--skills=off", "--cpus", "4", "--memory", "4g", "shell", $Repo) -Activity "Prepare test microVM $Sandbox"
 
-    # Strong public-web candidate: allow arbitrary destinations only on the two
-    # standard web ports. This still covers normal browser/package-manager/HTTPS
-    # traffic without implicitly granting arbitrary localhost ports.
-    Invoke-External "sbx" @("policy", "allow", "network", "--sandbox", $Sandbox, "**:80,**:443") | Out-Null
-
-    $PrivateDeny = @(Get-PrivateNetworkDenyResources)
-    $HostWebDeny = @("localhost:80", "localhost:443")
-    Invoke-External "sbx" @("policy", "deny", "network", "--sandbox", $Sandbox, (($PrivateDeny + $HostWebDeny) -join ",")) | Out-Null
+    # Exercise the same installer used by real OpenCode startup, first with
+    # restricted networking and then with the optional public-web profile.
+    $NetworkConfig = [pscustomobject]@{ LlamaPort = 8080; AllowFullWeb = $false; AdditionalNetworkHosts = @() }
+    Set-SandboxNetworkPolicy -Config $NetworkConfig -SandboxName $Sandbox
+    $Restricted = Run-Sbx $Sandbox @('sh', '-lc', 'curl -fsS --connect-timeout 2 --max-time 4 https://example.com -o /dev/null')
+    Add-Check 'Restricted profile blocks public HTTPS' ($Restricted.Code -ne 0) "curl exit=$($Restricted.Code); effective policy verified"
+    $NetworkConfig.AllowFullWeb = $true
+    Set-SandboxNetworkPolicy -Config $NetworkConfig -SandboxName $Sandbox
 
     Write-Host "Raccolgo evidenze dall'interno della microVM..." -ForegroundColor DarkGray
 

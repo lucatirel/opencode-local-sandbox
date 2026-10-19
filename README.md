@@ -124,7 +124,13 @@ Or create a new one:
 
 Then use OpenCode normally. Inside the microVM it has broad local freedom.
 
+Startup now requires clone mode, disabled shared skills, and disabled SSH-agent forwarding; unsafe local overrides stop the launch. An existing work sandbox is not resumed automatically because its original mounts may differ from today's flags. OCBox preserves it and asks you to recover its work with `handoff` before opening a fresh session. Use `scripts/handoff-project.ps1 -ProjectPath <path> -SandboxName <name>` if it has a custom name.
+
 If the configured local server/router is already running, OCBox reuses it and leaves it running at exit. In `router` mode it can otherwise start llama.cpp with your existing `--models-preset`, one loaded model, and loopback binding. In `external` mode it requires you to start the server with your normal command (for example your own `mup` alias). OCBox validates `/v1/models` and the selected alias, rather than treating any open TCP port as a working model API.
+
+The host endpoint must provide inference only. Do not enable host-side llama.cpp tools, agent mode, or host MCP executors. An advertised model list does not certify these settings. Shell tools, MCP executors, and browser processes used by OpenCode must run inside the microVM; registering a tool through a host MCP gateway does not establish that boundary.
+
+Clone mode protects the original checkout against writes, not against reads. The read-only source view can include ignored/untracked files such as `.env`. Start with a disposable repository containing no private data or credentials.
 
 ### 4. Review what came back
 
@@ -162,7 +168,7 @@ OCBox is intentionally narrow: **OpenCode + local llama.cpp + Windows + Docker S
 
 On the Windows reference environment, the current release candidate has completed:
 
-- **host isolation: PASS (12/12)**;
+- **host isolation: PASS (12/12 on the earlier tested revision)**;
 - **controlled adversarial containment: PASS (10/10)**;
 - disposable Git handoff: PASS;
 - real OpenCode + local-model end-to-end workflow;
@@ -315,6 +321,10 @@ $ModelAlias = 'your-alias'
 ```
 
 For an independently managed server, set `$ServerMode = 'external'`, `$LlamaPort`, `$ModelAlias`, and the context/output limits. No local GGUF or llama.cpp executable is required in external mode.
+
+The current default still enables public web access on ports 80/443. To request restricted networking, set `$AllowFullWeb = $false` and list exceptions in `$AdditionalNetworkHosts` in `config.local.ps1`. Startup checks negative public-network decisions as well as positive exceptions and refuses to proceed when its probes find inherited broad access. These probes are regression controls, not an exhaustive audit of every inherited domain rule. OCBox does not reset or silently delete global policies.
+
+The updated `security-test` uses the production network installer and adds a restricted-HTTPS negative control before testing the public-web positive control (13 checks total). This revision needs a fresh Windows/Draco integration run; previous 12/12 results do not validate the new code.
 
 The llama.cpp launch tuning in `config.example.ps1` is a reference preset, not a universal hardware recommendation.
 

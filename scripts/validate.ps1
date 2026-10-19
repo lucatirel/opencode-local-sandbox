@@ -62,6 +62,7 @@ Invoke-ValidationStep "Versioned JSON" {
 
 Invoke-ValidationStep "Dependency-free functional tests" {
     & (Join-Path $ToolRoot "tests\static-tests.ps1")
+    & (Join-Path $ToolRoot 'tests/security-boundary-tests.ps1')
     & (Join-Path $ToolRoot 'tests/startup-tests.ps1')
     & (Join-Path $ToolRoot 'tests/progress-tests.ps1')
 }

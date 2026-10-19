@@ -16,6 +16,7 @@ $ErrorActionPreference = "Stop"
 
 $CallerLocation = (Get-Location).Path
 $Config = Get-ToolConfig
+Assert-HardenedAgentConfig -Config $Config
 Assert-Command "sbx"
 
 function Repair-And-VerifySandboxShell {
@@ -61,6 +62,8 @@ if ([string]::IsNullOrWhiteSpace($SandboxName)) {
         $SandboxName = "$SandboxName-clone"
     }
 }
+
+Assert-FreshWorkSandbox -SandboxName $SandboxName
 
 $ServerLauncher = $null
 $ServerWasAlreadyRunning = Test-LlamaApi -Port ([int]$Config.LlamaPort)
@@ -111,13 +114,10 @@ try {
         $Elapsed = (Get-Date) - $CreateStarted
         Write-Host ("Sandbox ready in {0:n1}s." -f $Elapsed.TotalSeconds) -ForegroundColor Green
     }
-    else {
-        if ($DemoMode) { Write-Host "Disposable sandbox ready." -ForegroundColor Green }
-        else { Write-Host "Existing sandbox: $SandboxName" -ForegroundColor Yellow }
-    }
+    else { throw "Sandbox '$SandboxName' appeared during startup. Refusing to reuse unverified mounts; existing work was preserved." }
 
     if (-not $DemoMode) {
-        Write-Host "Applying public-web 80/443 policy, isolated llama endpoint, and no-approval OpenCode config..." -ForegroundColor Cyan
+        Write-Host "Applying and verifying network policy, isolated llama endpoint, and OpenCode config..." -ForegroundColor Cyan
     }
     Install-SandboxConfiguration -Config $Config -SandboxName $SandboxName
     Repair-And-VerifySandboxShell -Name $SandboxName
@@ -128,7 +128,7 @@ try {
     if ($DemoMode) {
         Write-Host "SANDBOX READY" -ForegroundColor Green
         Write-Host "  OpenCode: full permissions inside the microVM" -ForegroundColor Green
-        Write-Host "  Public web: allowed on 80/443" -ForegroundColor Green
+        Write-Host "  Public web: $($Config.AllowFullWeb) (explicit exceptions otherwise)" -ForegroundColor Green
         Write-Host "  Host/LAN/credentials: outside the default trust boundary" -ForegroundColor Green
         Write-Host ""
     }
@@ -137,6 +137,7 @@ try {
         Write-Host "Sandbox: $SandboxName" -ForegroundColor Green
         if ($Config.UseCloneMode) { Write-Host "Mode: CLONE - host repository read-only; changes stay in the private clone." -ForegroundColor Green }
         if ($Config.AllowFullWeb) { Write-Host "Network: public HTTP/HTTPS on 80/443; private/LAN and unauthorized host services denied." -ForegroundColor Green }
+        else { Write-Host "Network: restricted profile requested; explicit exceptions and negative policy probes verified." -ForegroundColor Green }
         Write-Host "OpenCode: no approval prompts inside the microVM." -ForegroundColor Green
         if ($Config.DestroyWorkSandboxOnExit) { Write-Host "Lifecycle: Git snapshot -> verified bundle -> refs/ocbox/* -> destroy microVM." -ForegroundColor Green }
         else { Write-Host "Lifecycle: sandbox is preserved after exit." -ForegroundColor Yellow }

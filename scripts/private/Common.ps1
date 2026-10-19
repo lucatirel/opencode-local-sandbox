@@ -71,6 +71,32 @@ function Assert-Command {
     }
 }
 
+function Assert-HardenedAgentConfig {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    foreach ($Setting in @('UseCloneMode', 'DisableSharedSkills', 'DisableSshAgentForwarding')) {
+        if (-not $Config.PSObject.Properties[$Setting] -or $Config.$Setting -isnot [bool] -or -not $Config.$Setting) {
+            throw "Hardened startup requires $Setting = `$true. No agent was started."
+        }
+    }
+    if ([int]$Config.LlamaPort -lt 1 -or [int]$Config.LlamaPort -gt 65535 -or [int]$Config.LlamaPort -in @(80, 443, 65534)) {
+        throw 'LlamaPort must be 1..65535, excluding host-deny probe ports 80, 443 and 65534.'
+    }
+    if ([int]$Config.ContextSize -le 1 -or [int]$Config.OutputTokens -le 0 -or [int]$Config.OutputTokens -ge [int]$Config.ContextSize) {
+        throw 'Generation limits require 0 < OutputTokens < ContextSize.'
+    }
+}
+
+function Assert-FreshWorkSandbox {
+    param([Parameter(Mandatory = $true)][string]$SandboxName)
+
+    # Creation flags do not change the mounts of an existing VM. Reusing by name
+    # could silently accept a direct mount, shared skills, or stale tool setup.
+    if (@(Get-SandboxNames) -contains $SandboxName) {
+        throw "Sandbox '$SandboxName' already exists; its original mounts cannot be certified by this launch. No agent was started and no work was deleted. Recover it with .\sandbox.ps1 handoff <project>, or scripts\handoff-project.ps1 -ProjectPath <project> -SandboxName '$SandboxName' for a custom name."
+    }
+}
+
 function Invoke-External {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -213,10 +239,12 @@ function Get-SandboxNetworkDecision {
     finally { $ErrorActionPreference = $Previous }
 
     $Text = (($Output | ForEach-Object { "$($_)" }) -join "`n").Trim()
-    $Decision = if ($Text -match '(?i)\bAllowed\b') {
+    $HasAllow = $Text -match '(?im)^\s*Allowed\b'
+    $HasDeny = $Text -match '(?im)^\s*Denied\b'
+    $Decision = if ($Code -eq 0 -and $HasAllow -and -not $HasDeny) {
         "allow"
     }
-    elseif ($Text -match '(?i)\bDenied\b') {
+    elseif ($Code -in @(0, 1) -and $HasDeny -and -not $HasAllow) {
         "deny"
     }
     else {
@@ -254,6 +282,13 @@ function Assert-EffectiveSandboxNetworkPolicy {
         $Expected["example.com:443"] = "allow"
     }
     else {
+        # Probe actual negative decisions as well as the requested exceptions.
+        # Inherited/global rules and a previous full-web profile may otherwise
+        # leave Internet reachable even when AllowFullWeb is false.
+        $Expected["example.com:80"] = "deny"
+        $Expected["example.com:443"] = "deny"
+        $Expected["1.1.1.1:443"] = "deny"
+        $Expected[("ocbox-" + [Guid]::NewGuid().ToString('N') + ".invalid:443")] = "deny"
         foreach ($Target in @($Config.AdditionalNetworkHosts | Where-Object { $_ })) {
             $Expected[$Target] = "allow"
         }
@@ -336,6 +371,37 @@ function Install-SandboxConfiguration {
         [Parameter(Mandatory = $true)][string]$SandboxName
     )
 
+    Set-SandboxNetworkPolicy -Config $Config -SandboxName $SandboxName
+
+    $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
+
+    Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
+    Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
+    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/opencode") | Out-Null
+    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local.json", "/etc/opencode/opencode.json") | Out-Null
+    Write-Host 'OpenCode version inside the microVM:' -ForegroundColor Cyan
+    Invoke-External 'sbx' @('exec', $SandboxName, 'opencode', '--version') | Out-Null
+
+    # OpenCode supports Claude Code compatibility by default. Disable it so a host
+    # or project .claude instruction/skills tree cannot silently extend the agent
+    # behavior outside the explicit project/OpenCode configuration model.
+    $PersistentEnv = @"
+set -eu
+FILE=/etc/sandbox-persistent.sh
+for LINE in 'export OPENCODE_DISABLE_CLAUDE_CODE=1' 'export OPENCODE_DISABLE_AUTOUPDATE=1'; do
+  grep -qxF "`$LINE" "`$FILE" 2>/dev/null || printf '%s\n' "`$LINE" | sudo tee -a "`$FILE" >/dev/null
+done
+"@
+    $PersistentEnv = $PersistentEnv.Replace("`r`n", "`n").Replace("`r", "")
+    Invoke-External "sbx" @("exec", $SandboxName, "bash", "-lc", $PersistentEnv) | Out-Null
+}
+
+function Set-SandboxNetworkPolicy {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$SandboxName
+    )
+
     Assert-Command "sbx"
 
     if ([int]$Config.LlamaPort -in @(80, 443)) {
@@ -360,28 +426,6 @@ function Install-SandboxConfiguration {
     # Fail closed before starting the agent if the effective policy differs from
     # the threat model (including when org governance overrides local rules).
     Assert-EffectiveSandboxNetworkPolicy -Config $Config -SandboxName $SandboxName
-
-    $GeneratedConfig = Write-GeneratedOpenCodeConfig -Config $Config -SandboxName $SandboxName
-
-    Invoke-External "sbx" @("exec", $SandboxName, "true") | Out-Null
-    Invoke-External "sbx" @("cp", $GeneratedConfig, "${SandboxName}:/tmp/opencode-local.json") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "mkdir", "-p", "/etc/opencode") | Out-Null
-    Invoke-External "sbx" @("exec", $SandboxName, "sudo", "install", "-m", "0644", "/tmp/opencode-local.json", "/etc/opencode/opencode.json") | Out-Null
-    Write-Host 'OpenCode version inside the microVM:' -ForegroundColor Cyan
-    Invoke-External 'sbx' @('exec', $SandboxName, 'opencode', '--version') | Out-Null
-
-    # OpenCode supports Claude Code compatibility by default. Disable it so a host
-    # or project .claude instruction/skills tree cannot silently extend the agent
-    # behavior outside the explicit project/OpenCode configuration model.
-    $PersistentEnv = @"
-set -eu
-FILE=/etc/sandbox-persistent.sh
-for LINE in 'export OPENCODE_DISABLE_CLAUDE_CODE=1' 'export OPENCODE_DISABLE_AUTOUPDATE=1'; do
-  grep -qxF "`$LINE" "`$FILE" 2>/dev/null || printf '%s\n' "`$LINE" | sudo tee -a "`$FILE" >/dev/null
-done
-"@
-    $PersistentEnv = $PersistentEnv.Replace("`r`n", "`n").Replace("`r", "")
-    Invoke-External "sbx" @("exec", $SandboxName, "bash", "-lc", $PersistentEnv) | Out-Null
 }
 
 function Test-LlamaApi {
