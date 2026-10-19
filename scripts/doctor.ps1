@@ -31,6 +31,8 @@ catch {
 }
 
 if ($Config) {
+    try { Assert-HardenedAgentConfig -Config $Config; Add-Check -Name 'Hardened startup configuration' -Ok $true -Detail 'required isolation flags and limits accepted' }
+    catch { Add-Check -Name 'Hardened startup configuration' -Ok $false -Detail $_.Exception.Message }
     Add-Check -Name 'Server mode' -Ok ($Config.ServerMode -in @('single', 'router', 'external')) -Detail $Config.ServerMode
     if ($Config.ServerMode -ne 'external') {
         $Server = Join-Path $Config.LlamaRoot 'build\bin\Release\llama-server.exe'

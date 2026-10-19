@@ -46,6 +46,7 @@ jobs:
         shell: powershell
         run: |
           .\tests\static-tests.ps1
+          .\tests\security-boundary-tests.ps1
           .\tests\startup-tests.ps1
           .\tests\progress-tests.ps1
 
@@ -53,6 +54,7 @@ jobs:
         shell: pwsh
         run: |
           .\tests\static-tests.ps1
+          .\tests\security-boundary-tests.ps1
           .\tests\startup-tests.ps1
           .\tests\progress-tests.ps1
 

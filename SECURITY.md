@@ -26,6 +26,8 @@ OpenCode approval prompts are disabled by design. A compromised agent or depende
 
 The security question is not whether hostile code can become powerful **inside** the microVM. The important question is what a fully compromised sandbox can reach **outside** it.
 
+The host model API is intended to generate responses and tool requests, not execute tools. Host-side llama.cpp tool/agent/MCP features must remain disabled. Model-list health checks do not certify that configuration. MCP servers and browser processes used as agent executors belong inside the microVM; Docker's host MCP gateway can expose host-side executors and must not be mistaken for guest execution.
+
 ## Host-side controls
 
 The hardened default profile uses:
@@ -47,6 +49,12 @@ The hardened default profile uses:
 - passive Git handoff under `refs/ocbox/*`;
 - host `HEAD` and working-tree integrity verification;
 - microVM destruction only after verified preservation.
+
+Agent startup refuses local settings that disable clone mode, shared-skills protection, or SSH-agent protection. It also refuses to resume an existing VM by name because current creation flags cannot certify its original mounts. Existing work is preserved for explicit Git handoff.
+
+SSH verification distinguishes a template's inert default `SSH_AUTH_SOCK=/run/ssh-agent.sock` from a real forwarding endpoint. It requires the host forwarding setting to be false, the default path to have no file/socket/symlink in a readable `/run`, and no nonempty SSH gateway/PID indicators. Unrecognized paths or probe failures remain blocked. The verification is shared by startup and the integration test and does not delete sockets or hide environment variables.
+
+The read-only source view is still readable, including ignored/untracked secrets. Use a sanitized source repository. Clone mode is an integrity control, not a source-confidentiality control.
 
 ## Why not `allow **`?
 
@@ -72,6 +80,7 @@ Or run the host-isolation test directly:
 
 The current test includes positive and negative controls for:
 
+- restricted-profile HTTPS denial using the production network installer;
 - public web access;
 - private CIDR denial;
 - localhost 80/443 denial;
@@ -95,6 +104,8 @@ It verifies that sandbox-only work can be snapshotted, exported through a verifi
 ## Source confidentiality is not guaranteed
 
 **Full public Internet access and source-code confidentiality are incompatible if the sandbox itself is considered hostile.**
+
+Restricted mode checks both allowed exceptions and denied public probes. It fails closed when these probes detect inherited broad permissions, but a finite probe set cannot certify every global or organization rule. Review active policies separately; OCBox deliberately does not reset unrelated global rules.
 
 A malicious agent or dependency that can read source code and reach arbitrary public HTTPS endpoints can exfiltrate that source without escaping the microVM.
 
